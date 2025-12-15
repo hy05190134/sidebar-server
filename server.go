@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 )
 
 var ErrSendBufferFull = errors.New("send buffer is full")
@@ -496,6 +497,14 @@ func WeComConfigHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("编码响应失败: %v", err)
 		http.Error(w, "编码响应失败", http.StatusInternalServerError)
 		return
+	}
+}
+
+func init() {
+	// 加载 .env 文件（如果存在）
+	if err := godotenv.Load(); err != nil {
+		// .env 文件不存在时忽略错误，使用系统环境变量
+		log.Println("未找到 .env 文件，使用系统环境变量")
 	}
 }
 
