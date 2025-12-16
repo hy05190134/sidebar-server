@@ -289,14 +289,15 @@ func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
 	// msg.Content 为 string 类型，直接使用
 	log.Printf("AI协助请求 context: %s", string(msg.Content))
 
-	// 生成模拟的 AI 协助响应，返回 text 字符串和 confidence
+	// 生成模拟的 AI 协助响应，返回 text 字符串、confidence 和 suggestion_id
 	assistanceResponse := map[string]interface{}{
-		"type":       "ai_suggestion",
-		"agent_id":   c.AgentID,
-		"chat_id":    c.ChatID,
-		"msg_id":     msg.MsgID,
-		"text":       "您好，请问有什么可以帮助您的吗？根据您的情况，建议您先检查一下相关设置。",
-		"confidence": 0.95,
+		"type":          "ai_suggestion",
+		"agent_id":      c.AgentID,
+		"chat_id":       c.ChatID,
+		"msg_id":        msg.MsgID,
+		"suggestion_id": "sug_001",
+		"text":          "您好，请问有什么可以帮助您的吗？根据您的情况，建议您先检查一下相关设置。",
+		"confidence":    0.95,
 	}
 
 	// 发送 AI 协助响应
