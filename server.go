@@ -281,8 +281,63 @@ func (c *WeComClient) handleAIFeedback(msg WeComMessage) {
 
 // handleAIAssistanceRequest 处理AI协助请求
 func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
-	// TODO: 实现AI协助请求处理逻辑
 	log.Printf("收到AI协助请求: agent_id=%s, chat_id=%s", c.AgentID, c.ChatID)
+
+	// 模拟 AI 处理延迟
+	time.Sleep(500 * time.Millisecond)
+
+	// 解析请求内容
+	var requestContent map[string]interface{}
+	if len(msg.Content) > 0 {
+		if err := json.Unmarshal(msg.Content, &requestContent); err != nil {
+			log.Printf("解析AI协助请求内容失败: %v", err)
+			return
+		}
+	}
+
+	// 生成模拟的 AI 协助响应
+	assistanceResponse := map[string]interface{}{
+		"type":     "ai_suggestion",
+		"agent_id": c.AgentID,
+		"chat_id":  c.ChatID,
+		"msg_id":   msg.MsgID,
+		"content": map[string]interface{}{
+			"suggestions": []map[string]interface{}{
+				{
+					"type":       "reply",
+					"text":       "您好，请问有什么可以帮助您的吗？",
+					"confidence": 0.95,
+					"category":   "greeting",
+				},
+				{
+					"type":       "question",
+					"text":       "您遇到的具体问题是什么？",
+					"confidence": 0.88,
+					"category":   "clarification",
+				},
+				{
+					"type":       "solution",
+					"text":       "根据您的情况，建议您先检查一下相关设置。",
+					"confidence": 0.82,
+					"category":   "troubleshooting",
+				},
+			},
+			"analysis": map[string]interface{}{
+				"sentiment":          "neutral",
+				"urgency":            "normal",
+				"topic":              "general_inquiry",
+				"recommended_action": "provide_information",
+			},
+			"timestamp": time.Now().Unix(),
+		},
+	}
+
+	// 发送 AI 协助响应
+	if err := c.SendMessage(assistanceResponse); err != nil {
+		log.Printf("发送AI协助响应失败: %v", err)
+	} else {
+		log.Printf("已发送AI协助响应给客服 %s", c.AgentID)
+	}
 }
 
 // generateNonceStr 生成随机字符串
