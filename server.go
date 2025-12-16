@@ -330,12 +330,28 @@ func getAccessToken(corpID, corpSecret string) (string, error) {
 		return "", fmt.Errorf("获取 access_token 失败: errcode=%d, errmsg=%s", result.ErrCode, result.ErrMsg)
 	}
 
-	// 更新缓存（提前5分钟过期，确保安全）
-	expireAt := time.Now().Add(time.Duration(result.ExpiresIn-300) * time.Second)
+	// 使用微信服务端返回的实际过期时间
+	// 提前10%的时间过期，确保安全（最少提前60秒）
+	expiresIn := result.ExpiresIn
+	if expiresIn <= 0 {
+		// 如果未返回过期时间，默认使用7200秒（2小时）
+		expiresIn = 7200
+		log.Printf("警告: access_token 未返回过期时间，使用默认值 7200 秒")
+	}
+
+	// 提前10%的时间过期，但最少提前60秒
+	earlyExpire := expiresIn / 10
+	if earlyExpire < 60 {
+		earlyExpire = 60
+	}
+	expireAt := time.Now().Add(time.Duration(expiresIn-earlyExpire) * time.Second)
+
 	tokenCache.mu.Lock()
 	tokenCache.accessToken = result.AccessToken
 	tokenCache.tokenExpireAt = expireAt
 	tokenCache.mu.Unlock()
+
+	log.Printf("access_token 已缓存，过期时间: %v (微信返回有效期: %d 秒)", expireAt, expiresIn)
 
 	return result.AccessToken, nil
 }
@@ -380,12 +396,28 @@ func getJSAPITicket(corpID, corpSecret string) (string, error) {
 		return "", fmt.Errorf("获取 jsapi_ticket 失败: errcode=%d, errmsg=%s", result.ErrCode, result.ErrMsg)
 	}
 
-	// 更新缓存（提前5分钟过期，确保安全）
-	expireAt := time.Now().Add(time.Duration(result.ExpiresIn-300) * time.Second)
+	// 使用微信服务端返回的实际过期时间
+	// 提前10%的时间过期，确保安全（最少提前60秒）
+	expiresIn := result.ExpiresIn
+	if expiresIn <= 0 {
+		// 如果未返回过期时间，默认使用7200秒（2小时）
+		expiresIn = 7200
+		log.Printf("警告: jsapi_ticket 未返回过期时间，使用默认值 7200 秒")
+	}
+
+	// 提前10%的时间过期，但最少提前60秒
+	earlyExpire := expiresIn / 10
+	if earlyExpire < 60 {
+		earlyExpire = 60
+	}
+	expireAt := time.Now().Add(time.Duration(expiresIn-earlyExpire) * time.Second)
+
 	tokenCache.mu.Lock()
 	tokenCache.jsapiTicket = result.Ticket
 	tokenCache.ticketExpireAt = expireAt
 	tokenCache.mu.Unlock()
+
+	log.Printf("jsapi_ticket 已缓存，过期时间: %v (微信返回有效期: %d 秒)", expireAt, expiresIn)
 
 	return result.Ticket, nil
 }
@@ -442,13 +474,28 @@ func getWeComConfig(r *http.Request) (*WeComConfig, error) {
 	// 获取当前请求的完整 URL
 	requestURL := r.URL.Query().Get("url")
 	if requestURL == "" {
-		// 如果没有提供 url 参数，则从请求头或请求 URL 构建
+		// 如果没有提供 url 参数，则从请求头构建
 		scheme := "https"
 		if r.TLS == nil {
 			scheme = "http"
 		}
-		// 移除查询参数，只保留路径部分用于签名
-		requestURL = fmt.Sprintf("%s://%s%s", scheme, r.Host, r.URL.Path)
+
+		// 构建完整的 URL，包含协议、主机（IP或域名）、端口和路径
+		host := r.Host
+		// r.Host 已经包含了端口号（如果有的话），所以直接使用
+		// 例如：192.168.1.1:8080 或 example.com:8080
+
+		// 构建 URL，包含查询参数（如果有）
+		requestURL = fmt.Sprintf("%s://%s%s", scheme, host, r.URL.Path)
+		if r.URL.RawQuery != "" {
+			requestURL += "?" + r.URL.RawQuery
+		}
+	} else {
+		// 如果传入了 url 参数，需要去除 fragment (# 后面的部分)
+		// 企业微信签名不包含 fragment
+		if idx := strings.Index(requestURL, "#"); idx != -1 {
+			requestURL = requestURL[:idx]
+		}
 	}
 
 	// 生成签名
