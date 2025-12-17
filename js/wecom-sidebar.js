@@ -85,7 +85,8 @@ class WeComSidebarAssistant {
         'getContext',
         'onChatMessage',
         'openEnterpriseChat',
-        'getExternalContact'
+        'getExternalContact',
+        'showModal'
       ],
       getConfigSignature: this.getConfigSignature
     }) 
@@ -405,28 +406,128 @@ class WeComSidebarAssistant {
     const textElement = suggestionElement.querySelector('.suggestion-text p');
     const originalText = textElement?.textContent || '';
     
-    // 弹出编辑框
-    const editedText = prompt('编辑AI建议:', originalText);
-    
-    if (editedText && editedText.trim() && editedText !== originalText) {
-      // 1. 发送编辑后的消息
-      this.sendWeComMessage(editedText, 'text');
-      
-      // 2. 发送反馈到服务器
-      this.sendToServer({
-        type: 'ai_feedback',
-        suggestion_id: suggestionId,
-        action: 'edited',
-        original_content: originalText,
-        edited_content: editedText
-      });
-      
-      // 3. 更新显示
-      textElement.textContent = editedText;
-      suggestionElement.style.borderColor = '#1890ff';
-    }
+    // 直接显示编辑输入框（完全替代 prompt）
+    this.showEditInputModal(suggestionId, originalText, textElement, suggestionElement);
   }
-  
+
+  // 显示自定义编辑输入框（模拟 prompt 样式）
+  showEditInputModal(suggestionId, originalText, textElement, suggestionElement) {
+    // 创建模态框遮罩层
+    const modalOverlay = document.createElement('div');
+    modalOverlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.3);
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    `;
+
+    // 创建模态框内容（模拟 prompt 样式）
+    const modalContent = document.createElement('div');
+    modalContent.style.cssText = `
+      background: #fff;
+      border: 1px solid #ccc;
+      width: 400px;
+      padding: 10px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    `;
+
+    const title = document.createElement('div');
+    title.textContent = '编辑AI建议';
+    title.style.cssText = `
+      margin-bottom: 10px;
+      font-size: 13px;
+    `;
+
+    const textarea = document.createElement('textarea');
+    textarea.value = originalText;
+    textarea.style.cssText = `
+      width: 100%;
+      height: 80px;
+      padding: 4px;
+      border: 1px solid #ccc;
+      font-size: 13px;
+      font-family: inherit;
+      box-sizing: border-box;
+      margin-bottom: 10px;
+      resize: none;
+    `;
+    textarea.focus();
+    textarea.select();
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.cssText = `
+      text-align: right;
+    `;
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = '取消';
+    cancelBtn.style.cssText = `
+      padding: 4px 12px;
+      margin-right: 8px;
+      border: 1px solid #ccc;
+      background: #fff;
+      cursor: pointer;
+      font-size: 13px;
+    `;
+    cancelBtn.onclick = () => {
+      document.body.removeChild(modalOverlay);
+    };
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.textContent = '确定';
+    confirmBtn.style.cssText = `
+      padding: 4px 12px;
+      border: 1px solid #ccc;
+      background: #fff;
+      cursor: pointer;
+      font-size: 13px;
+    `;
+    confirmBtn.onclick = () => {
+      const editedText = textarea.value.trim();
+      if (editedText && editedText !== originalText) {
+        // 1. 发送编辑后的消息
+        this.sendWeComMessage(editedText, 'text');
+
+        // 2. 发送反馈到服务器
+        this.sendToServer({
+          type: 'ai_feedback',
+          suggestion_id: suggestionId,
+          action: 'edited',
+          original_content: originalText,
+          edited_content: editedText
+        });
+
+        // 3. 更新显示
+        textElement.textContent = editedText;
+        suggestionElement.style.borderColor = '#1890ff';
+      }
+      document.body.removeChild(modalOverlay);
+    };
+
+    // ESC 键关闭
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') {
+        document.body.removeChild(modalOverlay);
+        document.removeEventListener('keydown', handleEsc);
+      }
+    };
+    document.addEventListener('keydown', handleEsc);
+
+    buttonContainer.appendChild(cancelBtn);
+    buttonContainer.appendChild(confirmBtn);
+    modalContent.appendChild(title);
+    modalContent.appendChild(textarea);
+    modalContent.appendChild(buttonContainer);
+    modalOverlay.appendChild(modalContent);
+    document.body.appendChild(modalOverlay);
+  }
+
   rejectSuggestion(suggestionId) {
     const suggestionElement = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
     
