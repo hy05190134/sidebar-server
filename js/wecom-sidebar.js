@@ -217,69 +217,6 @@ class WeComSidebarAssistant {
   
   async sendWeComMessage(content, msgtype = 'text') {
     // 在企业微信侧边栏中发送消息到主聊天窗口
-    return new Promise((resolve, reject) => {
-      if (typeof wx !== 'undefined' && wx.invoke) {
-        const message = {
-          msgtype: msgtype,
-          [msgtype]: {
-            content: content
-          }
-        };
-        
-        console.log('准备发送企业微信消息:', message);
-        
-        wx.invoke('sendChatMessage', message, (res) => {
-          console.log('sendChatMessage返回:', res);
-          
-          if (res.err_msg === 'sendChatMessage:ok') {
-            // 发送成功，通知服务器
-            this.sendMessageToServer({
-              type: 'agent_message_sent',
-              msg_id: res.msgId || `msg_${Date.now()}`,
-              content: content,
-              msgtype: msgtype,
-              chat_id: this.chatId,
-              agent_id: this.agentId,
-              timestamp: Date.now()
-            });
-            
-            resolve(res);
-          } else {
-            console.error('发送消息失败:', res);
-            reject(new Error(res.err_msg));
-          }
-        });
-        
-      } else {
-        // 开发环境模拟发送
-        console.log('[模拟]发送企业微信消息:', content);
-        
-        const mockResult = {
-          err_msg: 'sendChatMessage:ok',
-          msgId: `mock_msg_${Date.now()}`
-        };
-        
-        setTimeout(() => {
-          // 模拟发送到服务器
-          this.sendMessageToServer({
-            type: 'agent_message_sent',
-            msg_id: mockResult.msgId,
-            content: content,
-            msgtype: msgtype,
-            chat_id: this.chatId,
-            agent_id: this.agentId,
-            timestamp: Date.now()
-          });
-          
-          resolve(mockResult);
-        }, 500);
-      }
-    });
-  }
-  
-  // 替代方案：使用企业微信官方推荐的方式
-  async sendMessageAlternative(content, msgtype = 'text') {
-    // 这种方法更稳定，但需要侧边栏应用有发送消息的权限
     try {
       const message = {
         msgtype: msgtype
@@ -295,18 +232,92 @@ class WeComSidebarAssistant {
         case 'file':
           message.file = { media_id: content };
           break;
+        case 'video':
+          // video 类型：content 应为对象，包含 media_id，可选 thumb_media_id
+          if (typeof content === 'string') {
+            message.video = { media_id: content };
+          } else {
+            message.video = {
+              media_id: content.media_id,
+              thumb_media_id: content.thumb_media_id || content.thumbMediaId
+            };
+          }
+          break;
+        case 'miniprogram':
+          // miniprogram 类型：content 应为对象，包含 appid, pagepath, title，可选 thumb_media_id
+          if (typeof content === 'string') {
+            throw new Error('miniprogram 类型消息需要对象格式，包含 appid, pagepath, title');
+          } else {
+            message.miniprogram = {
+              appid: content.appid,
+              pagepath: content.pagepath,
+              title: content.title,
+              thumb_media_id: content.thumb_media_id || content.thumbMediaId
+            };
+          }
+          break;
+        case 'news':
+          // news 类型：content 应为对象，包含 articles 数组
+          if (typeof content === 'string') {
+            // 如果传入字符串，尝试解析为 JSON
+            try {
+              const parsed = JSON.parse(content);
+              message.news = { articles: parsed.articles || parsed };
+            } catch (e) {
+              throw new Error('news 类型消息需要 articles 数组');
+            }
+          } else {
+            message.news = {
+              articles: content.articles || (Array.isArray(content) ? content : [content])
+            };
+          }
+          break;
       }
       
-      // 调用企业微信API
-      const result = await ww.sendChatMessage(message);
+      console.log('准备发送企业微信消息:', message);
       
-      if (result.err_msg === 'sendChatMessage:ok') {
-        console.log('消息发送成功');
-        return result;
+      if (typeof ww !== 'undefined' && ww.sendChatMessage) {
+        const result = await ww.sendChatMessage(message);
+        console.log('sendChatMessage返回:', result);
+
+        if (result.err_msg === 'sendChatMessage:ok') {
+          // 发送成功，通知服务器
+          this.sendMessageToServer({
+            type: 'agent_message_sent',
+            msg_id: result.msgId || `msg_${Date.now()}`,
+            content: content,
+            msgtype: msgtype,
+            chat_id: this.chatId,
+            agent_id: this.agentId,
+            timestamp: Date.now()
+          });
+
+          return result;
+        } else {
+          console.error('发送消息失败:', result);
+          throw new Error(result.err_msg);
+        }
       } else {
-        throw new Error(result.err_msg);
+        // 开发环境模拟发送
+        console.log('[模拟]发送企业微信消息:', content);
+        const mockResult = {
+          err_msg: 'sendChatMessage:ok',
+          msgId: `mock_msg_${Date.now()}`
+        };
+
+        // 模拟发送到服务器
+        this.sendMessageToServer({
+          type: 'agent_message_sent',
+          msg_id: mockResult.msgId,
+          content: content,
+          msgtype: msgtype,
+          chat_id: this.chatId,
+          agent_id: this.agentId,
+          timestamp: Date.now()
+        });
+
+        return mockResult;
       }
-      
     } catch (error) {
       console.error('发送消息失败:', error);
       throw error;
@@ -506,6 +517,19 @@ class WeComSidebarAssistant {
         // 3. 更新显示
         textElement.textContent = editedText;
         suggestionElement.style.borderColor = '#1890ff';
+
+        // 4. 禁用所有按钮，防止重复发送
+        const allButtons = suggestionElement.querySelectorAll('button');
+        allButtons.forEach(btn => {
+          btn.disabled = true;
+          btn.style.opacity = '0.5';
+          btn.style.cursor = 'not-allowed';
+        });
+
+        // 5. 3秒后移除
+        setTimeout(() => {
+          suggestionElement.remove();
+        }, 3000);
       }
       document.body.removeChild(modalOverlay);
     };

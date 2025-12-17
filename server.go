@@ -63,11 +63,15 @@ type WeComClient struct {
 }
 
 type WeComMessage struct {
-	Type    string          `json:"type"`
-	AgentID string          `json:"agent_id"`
-	ChatID  string          `json:"chat_id"`
-	Content json.RawMessage `json:"content"`
-	MsgID   string          `json:"msg_id,omitempty"`
+	Type            string          `json:"type"`
+	AgentID         string          `json:"agent_id"`
+	ChatID          string          `json:"chat_id"`
+	Content         json.RawMessage `json:"content"`
+	SuggestionID    string          `json:"suggestion_id,omitempty"`
+	Action          string          `json:"action,omitempty"`
+	OriginalContent string          `json:"original_content,omitempty"`
+	EditedContent   string          `json:"edited_content,omitempty"`
+	MsgID           string          `json:"msg_id,omitempty"`
 }
 
 type WeComHub struct {
@@ -276,7 +280,9 @@ func (c *WeComClient) triggerNextAIAnalysis(msg WeComMessage) {
 // handleAIFeedback 处理AI建议反馈
 func (c *WeComClient) handleAIFeedback(msg WeComMessage) {
 	// TODO: 实现AI反馈处理逻辑
-	log.Printf("收到AI反馈: agent_id=%s, chat_id=%s", c.AgentID, c.ChatID)
+	log.Printf("收到AI反馈: agent_id=%s, chat_id=%s, suggestion_id=%s, action=%s, original_content=%s, edited_content=%s",
+		c.AgentID, c.ChatID, msg.SuggestionID, msg.Action, msg.OriginalContent, msg.EditedContent)
+	// todo: update suggestion_id and action and  originalContent and editedContent into pg databas
 }
 
 // handleAIAssistanceRequest 处理AI协助请求
@@ -306,6 +312,8 @@ func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
 	} else {
 		log.Printf("已发送AI协助响应给客服 %s", c.AgentID)
 	}
+
+	// todo: insert new suggestion record into pg database
 }
 
 // generateNonceStr 生成随机字符串
