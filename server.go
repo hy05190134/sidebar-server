@@ -2,14 +2,19 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
+	mathrand "math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"wework-sdk/wework"
 
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
@@ -55,11 +62,16 @@ type WeComConfig struct {
 }
 
 type WeComClient struct {
-	Conn    *websocket.Conn
-	AgentID string
-	ChatID  string
-	Send    chan []byte
-	mu      sync.Mutex
+	Conn         *websocket.Conn
+	AgentID      string
+	ChatID       string
+	Send         chan []byte
+	mu           sync.Mutex
+	weworkSDK    *wework.SDK
+	pollSeq      uint64        // 轮询序列号
+	pollTicker   *time.Ticker  // 轮询定时器
+	pollStop     chan struct{} // 停止轮询信号
+	pollInterval time.Duration // 轮询间隔
 }
 
 type WeComMessage struct {
@@ -104,10 +116,15 @@ func (h *WeComHub) Run() {
 				"time":     time.Now().Unix(),
 			})
 
+			// 启动轮询获取会话消息
+			go client.startPolling()
+
 		case client := <-h.Unregister:
 			if _, ok := h.Clients[client.AgentID]; ok {
 				delete(h.Clients, client.AgentID)
 				close(client.Send)
+				// 停止轮询
+				client.stopPolling()
 				log.Printf("客服 %s 已断开", client.AgentID)
 			}
 
@@ -157,8 +174,11 @@ func WeComWebSocketHandler(hub *WeComHub) http.HandlerFunc {
 		}
 
 		client := &WeComClient{
-			Conn: conn,
-			Send: make(chan []byte, 256),
+			Conn:         conn,
+			Send:         make(chan []byte, 256),
+			pollSeq:      0,
+			pollStop:     make(chan struct{}),
+			pollInterval: 5 * time.Second, // 默认5秒轮询一次
 		}
 
 		// 启动读写协程
@@ -219,7 +239,7 @@ func (c *WeComClient) handleMessage(data []byte, hub *WeComHub) {
 		c.handleAIFeedback(msg)
 
 	case "ai_assistance_request":
-		// 请求AI协助
+		// 请求AI协助（现在通过轮询触发，这里保留作为手动触发入口）
 		go c.handleAIAssistanceRequest(msg)
 
 	case "pong":
@@ -285,6 +305,235 @@ func (c *WeComClient) handleAIFeedback(msg WeComMessage) {
 	// todo: update suggestion_id and action and  originalContent and editedContent into pg databas
 }
 
+// startPolling 启动轮询获取会话消息
+func (c *WeComClient) startPolling() {
+	// 初始化 wework SDK
+	corpID := os.Getenv("WECOM_CORP_ID")
+	corpSecret := os.Getenv("WECOM_CORP_SECRET")
+	if corpID == "" || corpSecret == "" {
+		log.Printf("客服 %s 轮询启动失败: 缺少 WECOM_CORP_ID 或 WECOM_CORP_SECRET 环境变量", c.AgentID)
+		return
+	}
+
+	// 获取会话存档 Secret（可能需要单独的环境变量）
+	archiveSecret := os.Getenv("WECOM_ARCHIVE_SECRET")
+	if archiveSecret == "" {
+		// 如果没有单独的存档 Secret，使用 corpSecret
+		archiveSecret = corpSecret
+	}
+
+	sdk := wework.NewSDK()
+
+	if err := sdk.Init(corpID, archiveSecret); err != nil {
+		log.Printf("客服 %s 初始化 wework SDK 失败: %v", c.AgentID, err)
+		sdk.Destroy()
+		return
+	}
+
+	c.mu.Lock()
+	c.weworkSDK = sdk
+	c.pollTicker = time.NewTicker(c.pollInterval)
+	c.mu.Unlock()
+
+	log.Printf("客服 %s 开始轮询会话消息，间隔: %v", c.AgentID, c.pollInterval)
+
+	// 立即执行一次
+	c.pollChatMessages()
+
+	// 定时轮询
+	for {
+		select {
+		case <-c.pollTicker.C:
+			c.pollChatMessages()
+		case <-c.pollStop:
+			log.Printf("客服 %s 停止轮询会话消息", c.AgentID)
+			// 销毁 SDK
+			c.mu.Lock()
+			if c.weworkSDK != nil {
+				c.weworkSDK.Destroy()
+				c.weworkSDK = nil
+			}
+			c.mu.Unlock()
+			return
+		}
+	}
+}
+
+// stopPolling 停止轮询
+func (c *WeComClient) stopPolling() {
+	c.mu.Lock()
+	if c.pollTicker != nil {
+		c.pollTicker.Stop()
+		c.pollTicker = nil
+	}
+	c.mu.Unlock()
+
+	select {
+	case <-c.pollStop:
+		// 已经关闭
+	default:
+		close(c.pollStop)
+	}
+}
+
+// pollChatMessages 轮询获取会话消息
+func (c *WeComClient) pollChatMessages() {
+	c.mu.Lock()
+	sdk := c.weworkSDK
+	seq := c.pollSeq
+	c.mu.Unlock()
+
+	if sdk == nil {
+		return
+	}
+
+	// 获取会话存档数据
+	// limit: 一次拉取的消息数量，最大值1000
+	// proxy: 代理地址，不需要代理时传空字符串
+	// passwd: 代理账号密码，不需要代理时传空字符串
+	// timeout: 超时时间，单位秒
+	proxy := os.Getenv("WECOM_PROXY")
+	if proxy == "" {
+		proxy = ""
+	}
+	passwd := os.Getenv("WECOM_PROXY_PASSWD")
+	if passwd == "" {
+		passwd = ""
+	}
+	timeout := 30
+
+	chatData, err := sdk.GetChatData(seq, 100, proxy, passwd, timeout)
+	if err != nil {
+		log.Printf("客服 %s 获取会话存档失败: %v", c.AgentID, err)
+		return
+	}
+
+	if chatData.Len == 0 {
+		return
+	}
+
+	// 解析 JSON 数据
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(chatData.Data), &result); err != nil {
+		log.Printf("客服 %s 解析会话存档数据失败: %v", c.AgentID, err)
+		return
+	}
+
+	// 检查错误码
+	if errcode, ok := result["errcode"].(float64); ok && errcode != 0 {
+		errmsg := ""
+		if msg, ok := result["errmsg"].(string); ok {
+			errmsg = msg
+		}
+		log.Printf("客服 %s 获取会话存档返回错误: errcode=%.0f, errmsg=%s", c.AgentID, errcode, errmsg)
+		return
+	}
+
+	// 获取聊天数据数组
+	chatdata, ok := result["chatdata"].([]interface{})
+	if !ok || len(chatdata) == 0 {
+		return
+	}
+
+	log.Printf("客服 %s 获取到 %d 条新消息", c.AgentID, len(chatdata))
+
+	// 处理每条消息
+	maxSeq := seq
+	for _, msgItem := range chatdata {
+		msgMap, ok := msgItem.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// 更新最大 seq
+		if msgSeq, ok := msgMap["seq"].(float64); ok {
+			if uint64(msgSeq) > maxSeq {
+				maxSeq = uint64(msgSeq)
+			}
+		}
+
+		// 获取加密的消息字段
+		encryptRandomKey, hasKey := msgMap["encrypt_random_key"].(string)
+		encryptChatMsg, hasMsg := msgMap["encrypt_chat_msg"].(string)
+
+		if !hasKey || !hasMsg {
+			log.Printf("客服 %s 消息缺少加密字段，跳过解密", c.AgentID)
+			continue
+		}
+
+		// 解密消息
+		decryptedMsg, err := decryptChatMessage(encryptRandomKey, encryptChatMsg)
+		if err != nil {
+			log.Printf("客服 %s 解密消息失败: %v", c.AgentID, err)
+			continue
+		}
+
+		// 解析解密后的消息 JSON
+		var decryptedMsgData map[string]interface{}
+		if err := json.Unmarshal([]byte(decryptedMsg), &decryptedMsgData); err != nil {
+			log.Printf("客服 %s 解析解密后的消息失败: %v", c.AgentID, err)
+			continue
+		}
+
+		// 检查是否是当前会话的消息
+		// 根据企业微信文档，解密后的消息包含 chatid 字段
+		// 可以通过 chatid 判断是否属于当前会话
+		chatID := ""
+		if id, ok := decryptedMsgData["from"].(string); ok {
+			chatID = id
+		}
+
+		// 如果 chatID 不匹配，跳过此消息
+		if chatID != "" && chatID != c.ChatID {
+			log.Printf("客服 %s 消息 chatid=%s 不匹配当前会话 chat_id=%s，跳过", c.AgentID, chatID, c.ChatID)
+			continue
+		}
+
+		log.Printf("客服 %s 解密消息成功，chatid=%s", c.AgentID, chatID)
+
+		// 检查消息类型
+		msgType, ok := decryptedMsgData["msgtype"].(string)
+		if !ok {
+			log.Printf("客服 %s 消息类型字段缺失或格式错误，跳过", c.AgentID)
+			continue
+		}
+
+		// 构建消息内容用于 AI 协助请求（使用解密后的消息）
+		var msgContent []byte
+		switch msgType {
+		case "text":
+			// 文本消息，提取 content 字段
+			if content, ok := decryptedMsgData["content"].(string); ok {
+				msgContent = []byte(content)
+			} else {
+				// 如果 content 不是字符串，尝试序列化整个消息
+				msgContent, _ = json.Marshal(decryptedMsgData)
+			}
+		default:
+			log.Printf("客服 %s 收到类型消息: %s, 暂不支持，跳过", c.AgentID, msgType)
+			continue
+		}
+
+		// 触发 AI 协助请求
+		aiMsg := WeComMessage{
+			Type:    "ai_assistance_request",
+			AgentID: c.AgentID,
+			ChatID:  c.ChatID,
+			Content: msgContent,
+		}
+		if msgID, ok := msgMap["msgid"].(string); ok {
+			aiMsg.MsgID = msgID
+		}
+
+		go c.handleAIAssistanceRequest(aiMsg)
+	}
+
+	// 更新 seq
+	c.mu.Lock()
+	c.pollSeq = maxSeq
+	c.mu.Unlock()
+}
+
 // handleAIAssistanceRequest 处理AI协助请求
 func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
 	log.Printf("收到AI协助请求: agent_id=%s, chat_id=%s", c.AgentID, c.ChatID)
@@ -321,9 +570,76 @@ func generateNonceStr(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, length)
 	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
+		b[i] = charset[mathrand.Intn(len(charset))]
 	}
 	return string(b)
+}
+
+// decryptRSAKey 使用 RSA 私钥解密 encrypt_random_key
+func decryptRSAKey(encryptedKey string, privateKeyPath string) (string, error) {
+	// 读取私钥文件
+	privateKeyData, err := os.ReadFile(privateKeyPath)
+	if err != nil {
+		return "", fmt.Errorf("读取私钥文件失败: %w", err)
+	}
+
+	// 解析 PEM 格式的私钥
+	block, _ := pem.Decode(privateKeyData)
+	if block == nil {
+		return "", errors.New("解析私钥失败: 不是有效的 PEM 格式")
+	}
+
+	// 解析 PKCS1 或 PKCS8 格式的私钥
+	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		// 尝试 PKCS8 格式
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return "", fmt.Errorf("解析私钥失败: %w", err)
+		}
+		var ok bool
+		privateKey, ok = key.(*rsa.PrivateKey)
+		if !ok {
+			return "", errors.New("私钥不是 RSA 格式")
+		}
+	}
+
+	// Base64 解码加密的密钥
+	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedKey)
+	if err != nil {
+		return "", fmt.Errorf("Base64 解码失败: %w", err)
+	}
+
+	// RSA 解密
+	decryptedBytes, err := rsa.DecryptPKCS1v15(rand.Reader, privateKey, encryptedBytes)
+	if err != nil {
+		return "", fmt.Errorf("RSA 解密失败: %w", err)
+	}
+
+	return string(decryptedBytes), nil
+}
+
+// decryptChatMessage 解密会话消息
+func decryptChatMessage(encryptRandomKey, encryptChatMsg string) (string, error) {
+	// 获取 RSA 私钥路径
+	privateKeyPath := os.Getenv("WECOM_RSA_PRIVATE_KEY_PATH")
+	if privateKeyPath == "" {
+		return "", errors.New("WECOM_RSA_PRIVATE_KEY_PATH 环境变量未设置")
+	}
+
+	// 使用 RSA 私钥解密 encrypt_random_key
+	decryptedKey, err := decryptRSAKey(encryptRandomKey, privateKeyPath)
+	if err != nil {
+		return "", fmt.Errorf("解密 encrypt_random_key 失败: %w", err)
+	}
+
+	// 使用解密后的 key 和 encrypt_chat_msg 调用 DecryptData
+	decryptedMsg, err := wework.DecryptData(decryptedKey, encryptChatMsg)
+	if err != nil {
+		return "", fmt.Errorf("解密消息失败: %w", err)
+	}
+
+	return decryptedMsg, nil
 }
 
 // getAccessToken 获取企业微信 access_token
