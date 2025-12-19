@@ -8,6 +8,24 @@ PID_FILE=$(BUILD_DIR)/$(BINARY_NAME).pid
 LOG_FILE=$(BUILD_DIR)/$(BINARY_NAME).log
 GO=go
 GOFMT=gofmt
+SDK_DIR=go_sdk
+SDK_LIB_PATH=$(shell pwd)/$(SDK_DIR)
+
+# 检测操作系统类型，设置相应的库路径环境变量
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+	# Linux 使用 LD_LIBRARY_PATH
+	export LD_LIBRARY_PATH := $(SDK_LIB_PATH):$(LD_LIBRARY_PATH)
+	LIB_PATH_VAR := $(LD_LIBRARY_PATH)
+else ifeq ($(UNAME_S),Darwin)
+	# macOS 使用 DYLD_LIBRARY_PATH
+	export DYLD_LIBRARY_PATH := $(SDK_LIB_PATH):$(DYLD_LIBRARY_PATH)
+	LIB_PATH_VAR := $(DYLD_LIBRARY_PATH)
+else
+	# 其他系统默认使用 LD_LIBRARY_PATH
+	export LD_LIBRARY_PATH := $(SDK_LIB_PATH):$(LD_LIBRARY_PATH)
+	LIB_PATH_VAR := $(LD_LIBRARY_PATH)
+endif
 
 # 颜色定义
 CYAN=\033[0;36m
@@ -50,14 +68,29 @@ help:
 build:
 	@echo "$(CYAN)构建 $(BINARY_NAME)...$(NC)"
 	@mkdir -p $(BUILD_DIR)
+	@if [ ! -f $(SDK_DIR)/libWeWorkFinanceSdk_C.so ]; then \
+		echo "$(YELLOW)警告: 未找到动态链接库 $(SDK_DIR)/libWeWorkFinanceSdk_C.so$(NC)"; \
+		echo "$(YELLOW)请确保 wework SDK 的动态链接库文件存在$(NC)"; \
+	fi
 	@$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_FILE)
 	@echo "$(GREEN)构建完成: $(BUILD_DIR)/$(BINARY_NAME)$(NC)"
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		echo "$(GREEN)提示: 运行时需要设置 DYLD_LIBRARY_PATH=$(LIB_PATH_VAR)$(NC)"; \
+	else \
+		echo "$(GREEN)提示: 运行时需要设置 LD_LIBRARY_PATH=$(LIB_PATH_VAR)$(NC)"; \
+	fi
 
 ## run: 运行服务器（前台）
 .PHONY: run
 run:
 	@echo "$(CYAN)启动服务器（前台运行）...$(NC)"
-	@$(GO) run $(MAIN_FILE)
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		echo "$(YELLOW)DYLD_LIBRARY_PATH=$(LIB_PATH_VAR)$(NC)"; \
+		DYLD_LIBRARY_PATH=$(LIB_PATH_VAR) $(GO) run $(MAIN_FILE); \
+	else \
+		echo "$(YELLOW)LD_LIBRARY_PATH=$(LIB_PATH_VAR)$(NC)"; \
+		LD_LIBRARY_PATH=$(LIB_PATH_VAR) $(GO) run $(MAIN_FILE); \
+	fi
 
 ## start: 启动服务器（后台）
 .PHONY: start
@@ -72,7 +105,13 @@ start: build
 		fi; \
 	fi
 	@echo "$(CYAN)启动服务器（后台运行）...$(NC)"
-	@nohup $(BUILD_DIR)/$(BINARY_NAME) > $(LOG_FILE) 2>&1 & echo $$! > $(PID_FILE)
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		echo "$(YELLOW)DYLD_LIBRARY_PATH=$(LIB_PATH_VAR)$(NC)"; \
+		DYLD_LIBRARY_PATH=$(LIB_PATH_VAR) nohup $(BUILD_DIR)/$(BINARY_NAME) > $(LOG_FILE) 2>&1 & echo $$! > $(PID_FILE); \
+	else \
+		echo "$(YELLOW)LD_LIBRARY_PATH=$(LIB_PATH_VAR)$(NC)"; \
+		LD_LIBRARY_PATH=$(LIB_PATH_VAR) nohup $(BUILD_DIR)/$(BINARY_NAME) > $(LOG_FILE) 2>&1 & echo $$! > $(PID_FILE); \
+	fi
 	@sleep 1
 	@if [ -f $(PID_FILE) ]; then \
 		PID=$$(cat $(PID_FILE)); \
