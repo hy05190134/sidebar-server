@@ -81,6 +81,50 @@
     .status-dot.connected {
       background: #10b981;
     }
+
+    .quick-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .poll-interval-section {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #e5e7eb;
+    }
+
+    .poll-interval-controls {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .poll-interval-input {
+      flex: 1;
+      padding: 6px 8px;
+      border: 1px solid #d1d5db;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+
+    .poll-interval-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 8px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+
+    .poll-interval-display {
+      font-weight: 500;
+      color: #1890ff;
+    }
+
+    .poll-status-display {
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
@@ -101,10 +145,66 @@
       <div class="quick-actions">
         <button class="action-btn" onclick="requestAIHelp()">请求AI协助</button>
         <button class="action-btn" onclick="toggleAutoAI()">自动AI: <span id="autoAIStatus">关闭</span></button>
+
+        <div class="poll-interval-section">
+          <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">轮询间隔设置</div>
+          <div class="poll-interval-controls">
+            <input
+              type="number"
+              id="pollIntervalInput"
+              class="poll-interval-input"
+              placeholder="间隔（秒）"
+              min="1"
+              max="3600"
+              value="5"
+            />
+            <button class="action-btn" onclick="setPollIntervalFromInput()">设置</button>
+            <button class="action-btn" onclick="getPollInterval()">查询</button>
+          </div>
+          <div class="poll-interval-info">
+            <span>当前: <span class="poll-interval-display" id="pollIntervalDisplay">-</span></span>
+            <span class="poll-status-display" id="pollStatusDisplay">-</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
   <script src="js/wecom-sidebar.js"></script>
+  <script>
+    // 从输入框设置轮询间隔
+    function setPollIntervalFromInput() {
+      const input = document.getElementById('pollIntervalInput');
+      const interval = parseInt(input.value);
+
+      if (isNaN(interval) || interval < 1 || interval > 3600) {
+        alert('请输入有效的间隔值（1-3600秒）');
+        return;
+      }
+
+      setPollInterval(interval);
+    }
+
+    // 页面加载时查询当前轮询间隔
+    window.addEventListener('load', function() {
+      setTimeout(() => {
+        if (window.sideBarAssistant && window.sideBarAssistant.isConnected) {
+          getPollInterval();
+        }
+      }, 1000);
+    });
+
+    // 监听输入框回车键
+    document.addEventListener('DOMContentLoaded', function() {
+      const input = document.getElementById('pollIntervalInput');
+      if (input) {
+        input.addEventListener('keypress', function(e) {
+          if (e.key === 'Enter') {
+            setPollIntervalFromInput();
+          }
+        });
+      }
+    });
+  </script>
 </body>
 </html>

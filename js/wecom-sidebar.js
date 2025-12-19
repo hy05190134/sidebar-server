@@ -341,6 +341,15 @@ class WeComSidebarAssistant {
       case 'auth_success':
         console.log('认证成功');
         break;
+      case 'poll_interval_updated':
+        this.handlePollIntervalUpdated(data);
+        break;
+      case 'poll_interval_info':
+        this.handlePollIntervalInfo(data);
+        break;
+      case 'poll_interval_error':
+        this.handlePollIntervalError(data);
+        break;
     }
   }
   
@@ -655,6 +664,83 @@ class WeComSidebarAssistant {
       }
     });
   }
+
+  /**
+   * 设置轮询间隔
+   * @param {number} interval - 间隔时间（秒）
+   */
+  setPollInterval(interval) {
+    if (interval < 1 || interval > 3600) {
+      console.error('轮询间隔必须在 1-3600 秒之间');
+      return;
+    }
+
+    this.sendToServer({
+      type: 'set_poll_interval',
+      agent_id: this.agentId,
+      content: {
+        interval: interval
+      }
+    });
+  }
+
+  /**
+   * 获取当前轮询间隔
+   */
+  getPollInterval() {
+    this.sendToServer({
+      type: 'get_poll_interval',
+      agent_id: this.agentId
+    });
+  }
+
+  /**
+   * 处理轮询间隔更新响应
+   */
+  handlePollIntervalUpdated(data) {
+    console.log('轮询间隔已更新:', data.poll_interval, '秒');
+    if (data.note) {
+      console.log('提示:', data.note);
+    }
+    // 可以更新UI显示
+    this.updatePollIntervalDisplay(data.poll_interval);
+  }
+
+  /**
+   * 处理轮询间隔信息响应
+   */
+  handlePollIntervalInfo(data) {
+    console.log('当前轮询间隔:', data.poll_interval, '秒');
+    console.log('轮询状态:', data.is_polling ? '运行中' : '未运行');
+    // 更新UI显示
+    this.updatePollIntervalDisplay(data.poll_interval, data.is_polling);
+  }
+
+  /**
+   * 处理轮询间隔错误响应
+   */
+  handlePollIntervalError(data) {
+    console.error('轮询间隔设置失败:', data.error);
+    // 可以显示错误提示给用户
+    alert(`轮询间隔设置失败: ${data.error}`);
+  }
+
+  /**
+   * 更新轮询间隔显示（如果UI中有相关元素）
+   */
+  updatePollIntervalDisplay(interval, isPolling = null) {
+    const displayElement = document.getElementById('pollIntervalDisplay');
+    if (displayElement) {
+      displayElement.textContent = `${interval} 秒`;
+      if (isPolling !== null) {
+        const statusElement = document.getElementById('pollStatusDisplay');
+        if (statusElement) {
+          statusElement.textContent = isPolling ? '运行中' : '未运行';
+          statusElement.style.color = isPolling ? '#10b981' : '#6b7280';
+        }
+      }
+    }
+  }
 }
 
 // 全局访问
@@ -670,4 +756,14 @@ window.toggleAutoAI = function() {
   const statusElement = document.getElementById('autoAIStatus');
   statusElement.textContent = sideBarAssistant.autoAI ? '开启' : '关闭';
   statusElement.style.color = sideBarAssistant.autoAI ? '#10b981' : '#6b7280';
+};
+
+// 设置轮询间隔（全局函数）
+window.setPollInterval = function(interval) {
+  sideBarAssistant.setPollInterval(interval);
+};
+
+// 获取轮询间隔（全局函数）
+window.getPollInterval = function() {
+  sideBarAssistant.getPollInterval();
 };

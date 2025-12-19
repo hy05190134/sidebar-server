@@ -62,16 +62,17 @@ type WeComConfig struct {
 }
 
 type WeComClient struct {
-	Conn         *websocket.Conn
-	AgentID      string
-	ChatID       string
-	Send         chan []byte
-	mu           sync.Mutex
-	weworkSDK    *wework.SDK
-	pollSeq      uint64        // 轮询序列号
-	pollTicker   *time.Ticker  // 轮询定时器
-	pollStop     chan struct{} // 停止轮询信号
-	pollInterval time.Duration // 轮询间隔
+	Conn           *websocket.Conn
+	AgentID        string
+	ChatID         string
+	Send           chan []byte
+	mu             sync.Mutex
+	weworkSDK      *wework.SDK
+	pollSeq        uint64             // 轮询序列号
+	pollTicker     *time.Ticker       // 轮询定时器
+	pollStop       chan struct{}      // 停止轮询信号
+	pollInterval   time.Duration      // 轮询间隔
+	pollIntervalCh chan time.Duration // 更新轮询间隔的通道
 }
 
 type WeComMessage struct {
@@ -174,11 +175,12 @@ func WeComWebSocketHandler(hub *WeComHub) http.HandlerFunc {
 		}
 
 		client := &WeComClient{
-			Conn:         conn,
-			Send:         make(chan []byte, 256),
-			pollSeq:      0,
-			pollStop:     make(chan struct{}),
-			pollInterval: 5 * time.Second, // 默认5秒轮询一次
+			Conn:           conn,
+			Send:           make(chan []byte, 256),
+			pollSeq:        0,
+			pollStop:       make(chan struct{}),
+			pollInterval:   5 * time.Second,             // 默认5秒轮询一次
+			pollIntervalCh: make(chan time.Duration, 1), // 更新轮询间隔的通道
 		}
 
 		// 启动读写协程
@@ -241,6 +243,14 @@ func (c *WeComClient) handleMessage(data []byte, hub *WeComHub) {
 	case "ai_assistance_request":
 		// 请求AI协助（现在通过轮询触发，这里保留作为手动触发入口）
 		go c.handleAIAssistanceRequest(msg)
+
+	case "set_poll_interval":
+		// 设置轮询间隔
+		c.handleSetPollInterval(msg)
+
+	case "get_poll_interval":
+		// 获取当前轮询间隔
+		c.handleGetPollInterval()
 
 	case "pong":
 		// 心跳响应
@@ -333,9 +343,10 @@ func (c *WeComClient) startPolling() {
 	c.mu.Lock()
 	c.weworkSDK = sdk
 	c.pollTicker = time.NewTicker(c.pollInterval)
+	currentInterval := c.pollInterval
 	c.mu.Unlock()
 
-	log.Printf("客服 %s 开始轮询会话消息，间隔: %v", c.AgentID, c.pollInterval)
+	log.Printf("客服 %s 开始轮询会话消息，间隔: %v", c.AgentID, currentInterval)
 
 	// 立即执行一次
 	c.pollChatMessages()
@@ -345,6 +356,22 @@ func (c *WeComClient) startPolling() {
 		select {
 		case <-c.pollTicker.C:
 			c.pollChatMessages()
+		case newInterval := <-c.pollIntervalCh:
+			// 更新轮询间隔
+			c.mu.Lock()
+			if c.pollTicker != nil {
+				c.pollTicker.Stop()
+			}
+			c.pollInterval = newInterval
+			c.pollTicker = time.NewTicker(newInterval)
+			log.Printf("客服 %s 轮询间隔已更新为: %v", c.AgentID, newInterval)
+			c.mu.Unlock()
+			// 发送确认消息
+			c.SendMessage(map[string]interface{}{
+				"type":          "poll_interval_updated",
+				"agent_id":      c.AgentID,
+				"poll_interval": float64(newInterval) / float64(time.Second),
+			})
 		case <-c.pollStop:
 			log.Printf("客服 %s 停止轮询会话消息", c.AgentID)
 			// 销毁 SDK
@@ -352,6 +379,10 @@ func (c *WeComClient) startPolling() {
 			if c.weworkSDK != nil {
 				c.weworkSDK.Destroy()
 				c.weworkSDK = nil
+			}
+			if c.pollTicker != nil {
+				c.pollTicker.Stop()
+				c.pollTicker = nil
 			}
 			c.mu.Unlock()
 			return
@@ -374,6 +405,106 @@ func (c *WeComClient) stopPolling() {
 	default:
 		close(c.pollStop)
 	}
+}
+
+// handleSetPollInterval 处理设置轮询间隔的请求
+func (c *WeComClient) handleSetPollInterval(msg WeComMessage) {
+	// 解析消息内容，获取间隔时间（单位：秒）
+	var intervalData map[string]interface{}
+	if err := json.Unmarshal(msg.Content, &intervalData); err != nil {
+		log.Printf("客服 %s 解析轮询间隔设置失败: %v", c.AgentID, err)
+		c.SendMessage(map[string]interface{}{
+			"type":     "poll_interval_error",
+			"agent_id": c.AgentID,
+			"error":    "无效的间隔设置格式",
+		})
+		return
+	}
+
+	// 获取间隔值（单位：秒）
+	intervalSec, ok := intervalData["interval"].(float64)
+	if !ok {
+		log.Printf("客服 %s 轮询间隔设置缺少 interval 字段", c.AgentID)
+		c.SendMessage(map[string]interface{}{
+			"type":     "poll_interval_error",
+			"agent_id": c.AgentID,
+			"error":    "缺少 interval 字段（单位：秒）",
+		})
+		return
+	}
+
+	// 验证间隔范围（最小1秒，最大1小时）
+	minInterval := 1 * time.Second
+	maxInterval := 1 * time.Hour
+	newInterval := time.Duration(intervalSec) * time.Second
+
+	if newInterval < minInterval {
+		log.Printf("客服 %s 轮询间隔设置过小: %v，最小值为: %v", c.AgentID, newInterval, minInterval)
+		c.SendMessage(map[string]interface{}{
+			"type":     "poll_interval_error",
+			"agent_id": c.AgentID,
+			"error":    fmt.Sprintf("轮询间隔不能小于 %v", minInterval),
+		})
+		return
+	}
+
+	if newInterval > maxInterval {
+		log.Printf("客服 %s 轮询间隔设置过大: %v，最大值为: %v", c.AgentID, newInterval, maxInterval)
+		c.SendMessage(map[string]interface{}{
+			"type":     "poll_interval_error",
+			"agent_id": c.AgentID,
+			"error":    fmt.Sprintf("轮询间隔不能大于 %v", maxInterval),
+		})
+		return
+	}
+
+	// 检查轮询是否已启动
+	c.mu.Lock()
+	hasPolling := c.weworkSDK != nil
+	c.mu.Unlock()
+
+	if !hasPolling {
+		// 如果轮询未启动，只更新配置，不立即生效
+		c.mu.Lock()
+		c.pollInterval = newInterval
+		c.mu.Unlock()
+		log.Printf("客服 %s 轮询间隔配置已更新为: %v（轮询未启动，将在启动时生效）", c.AgentID, newInterval)
+		c.SendMessage(map[string]interface{}{
+			"type":          "poll_interval_updated",
+			"agent_id":      c.AgentID,
+			"poll_interval": intervalSec,
+			"note":          "轮询未启动，将在启动时生效",
+		})
+		return
+	}
+
+	// 发送更新请求到轮询循环
+	select {
+	case c.pollIntervalCh <- newInterval:
+		log.Printf("客服 %s 已发送轮询间隔更新请求: %v", c.AgentID, newInterval)
+	default:
+		log.Printf("客服 %s 轮询间隔更新通道已满，跳过", c.AgentID)
+		c.SendMessage(map[string]interface{}{
+			"type":     "poll_interval_error",
+			"agent_id": c.AgentID,
+			"error":    "更新请求队列已满，请稍后重试",
+		})
+	}
+}
+
+// handleGetPollInterval 处理获取当前轮询间隔的请求
+func (c *WeComClient) handleGetPollInterval() {
+	c.mu.Lock()
+	interval := c.pollInterval
+	isPolling := c.weworkSDK != nil
+	c.mu.Unlock()
+
+	c.SendMessage(map[string]interface{}{
+		"type":          "poll_interval_info",
+		"agent_id":      c.AgentID,
+		"poll_interval": float64(interval) / float64(time.Second),
+		"is_polling":    isPolling,
+	})
 }
 
 // pollChatMessages 轮询获取会话消息
