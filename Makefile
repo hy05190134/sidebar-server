@@ -2,7 +2,7 @@
 
 # 变量定义
 BINARY_NAME=sidebar-server
-MAIN_FILE=server.go
+MAIN_PACKAGE=.
 BUILD_DIR=bin
 PID_FILE=$(BUILD_DIR)/$(BINARY_NAME).pid
 LOG_FILE=$(BUILD_DIR)/$(BINARY_NAME).log
@@ -72,7 +72,7 @@ build:
 		echo "$(YELLOW)警告: 未找到动态链接库 $(SDK_DIR)/libWeWorkFinanceSdk_C.so$(NC)"; \
 		echo "$(YELLOW)请确保 wework SDK 的动态链接库文件存在$(NC)"; \
 	fi
-	@$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_FILE)
+	@$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
 	@echo "$(GREEN)构建完成: $(BUILD_DIR)/$(BINARY_NAME)$(NC)"
 	@if [ "$(UNAME_S)" = "Darwin" ]; then \
 		echo "$(GREEN)提示: 运行时需要设置 DYLD_LIBRARY_PATH=$(LIB_PATH_VAR)$(NC)"; \
@@ -86,10 +86,10 @@ run:
 	@echo "$(CYAN)启动服务器（前台运行）...$(NC)"
 	@if [ "$(UNAME_S)" = "Darwin" ]; then \
 		echo "$(YELLOW)DYLD_LIBRARY_PATH=$(LIB_PATH_VAR)$(NC)"; \
-		DYLD_LIBRARY_PATH=$(LIB_PATH_VAR) $(GO) run $(MAIN_FILE); \
+		DYLD_LIBRARY_PATH=$(LIB_PATH_VAR) $(GO) run $(MAIN_PACKAGE); \
 	else \
 		echo "$(YELLOW)LD_LIBRARY_PATH=$(LIB_PATH_VAR)$(NC)"; \
-		LD_LIBRARY_PATH=$(LIB_PATH_VAR) $(GO) run $(MAIN_FILE); \
+		LD_LIBRARY_PATH=$(LIB_PATH_VAR) $(GO) run $(MAIN_PACKAGE); \
 	fi
 
 ## start: 启动服务器（后台）
