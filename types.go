@@ -15,11 +15,13 @@ var ErrSendBufferFull = errors.New("send buffer is full")
 
 // TokenCache 缓存 access_token 和 jsapi_ticket
 type TokenCache struct {
-	mu             sync.RWMutex
-	accessToken    string
-	jsapiTicket    string
-	tokenExpireAt  time.Time
-	ticketExpireAt time.Time
+	mu                  sync.RWMutex
+	accessToken         string
+	jsapiTicket         string // 应用的 jsapi_ticket
+	agentJSAPITicket    string // 企业的 jsapi_ticket
+	tokenExpireAt       time.Time
+	ticketExpireAt      time.Time
+	agentTicketExpireAt time.Time
 }
 
 var tokenCache = &TokenCache{}

@@ -65,10 +65,30 @@ func getWeComConfig(r *http.Request) (*WeComConfig, error) {
 		return nil, errors.New("WECOM_AGENT_ID 环境变量未设置")
 	}
 
-	// 自动获取 jsapi_ticket
-	jsapiTicket, err := getJSAPITicket(corpID, corpSecret)
+	// 检查是否使用应用的 jsapi_ticket（agent=1）
+	// agent=1: 使用应用的 jsapi_ticket（用于 wx.agentConfig）
+	// 默认: 使用企业的 jsapi_ticket（用于 wx.config）
+	useAgentConfig := false
+	if agentParam := r.URL.Query().Get("agent"); agentParam == "1" {
+		useAgentConfig = true
+	}
+
+	// 获取 jsapi_ticket
+	// useAgentConfig=true: 使用应用的 jsapi_ticket（用于 wx.agentConfig）
+	// useAgentConfig=false: 使用企业的 jsapi_ticket（用于 wx.config，默认）
+	jsapiTicket, err := getJSAPITicket(corpID, corpSecret, useAgentConfig)
 	if err != nil {
-		return nil, fmt.Errorf("获取 jsapi_ticket 失败: %w", err)
+		ticketType := "企业"
+		if useAgentConfig {
+			ticketType = "应用"
+		}
+		return nil, fmt.Errorf("获取%s jsapi_ticket 失败: %w", ticketType, err)
+	}
+
+	if useAgentConfig {
+		logger.Debug("使用应用 jsapi_ticket", zap.String("agent_id", agentID))
+	} else {
+		logger.Debug("使用企业 jsapi_ticket", zap.String("agent_id", agentID))
 	}
 
 	// 生成时间戳和随机字符串
