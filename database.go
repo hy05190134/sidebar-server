@@ -25,7 +25,6 @@ type Suggestion struct {
 	MsgID           string  `gorm:"type:varchar(255);index"` // 关联的消息ID
 	OriginalContent string  `gorm:"type:text"`
 	EditedContent   string  `gorm:"type:text"`
-	Text            string  `gorm:"type:text"`
 	Confidence      float64 `gorm:"type:decimal(5,2)"`
 	Similarity      float64 `gorm:"type:decimal(5,2);default:0"` // 相似率（0-100）
 	Action          string  `gorm:"type:varchar(50)"`            // use, edit, reject
@@ -279,6 +278,66 @@ func findSuggestionsByContent(agentID string, chatID string, content string, bef
 	}
 
 	return matchedSuggestions, nil
+}
+
+// createSuggestion 创建新的 suggestion 记录
+func createSuggestion(suggestionID, agentID, chatID, msgID, text string, confidence float64) error {
+	if db == nil {
+		return fmt.Errorf("数据库未初始化")
+	}
+
+	suggestion := Suggestion{
+		SuggestionID:    suggestionID,
+		AgentID:         agentID,
+		ChatID:          chatID,
+		MsgID:           msgID, // 初始可能为空，后续关联时更新
+		OriginalContent: text,  // AI 建议的原始内容
+		EditedContent:   "",    // 初始为空，如果客服编辑后会有值
+		Confidence:      confidence,
+		Similarity:      0.0, // 初始为 0，关联消息时计算
+		Action:          "",  // 初始为空，反馈时更新
+	}
+
+	if err := db.Create(&suggestion).Error; err != nil {
+		return fmt.Errorf("创建 suggestion 失败: %w", err)
+	}
+
+	return nil
+}
+
+// updateSuggestionFeedback 更新 suggestion 的反馈信息
+func updateSuggestionFeedback(suggestionID string, action string, originalContent string, editedContent string) error {
+	if db == nil {
+		return fmt.Errorf("数据库未初始化")
+	}
+
+	updates := map[string]interface{}{
+		"action": action,
+	}
+
+	// 如果提供了 original_content，则更新
+	if originalContent != "" {
+		updates["original_content"] = originalContent
+	}
+
+	// 如果提供了 edited_content，则更新
+	if editedContent != "" {
+		updates["edited_content"] = editedContent
+	}
+
+	result := db.Model(&Suggestion{}).
+		Where("suggestion_id = ?", suggestionID).
+		Updates(updates)
+
+	if result.Error != nil {
+		return fmt.Errorf("更新 suggestion 反馈信息失败: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("未找到 suggestion_id: %s", suggestionID)
+	}
+
+	return nil
 }
 
 // updateSuggestionMsgID 更新 suggestion 的 msg_id 和相似率
