@@ -36,7 +36,59 @@ class WeComSidebarAssistant {
 
     // 2. 调用你已有的后端签名接口
     // 注意：URL需要先移除hash部分，并且encodeURIComponent
-    const apiUrl = `http://111.230.112.121:8080/api/wx-config?url=${encodeURIComponent(currentUrl.split('#')[0])}`;
+    const apiUrl = `http://www.hyorange.com:8080/api/wx-config?url=${encodeURIComponent(currentUrl.split('#')[0])}`;
+
+    // 3. 返回一个Promise，SDK会等待其完成
+    return fetch(apiUrl)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`网络响应错误: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(configData => {
+        // 4. 确保返回的对象格式符合SDK要求
+        console.log('[签名函数] 从后端获取到配置:', {
+          timestamp: configData.timestamp,
+          nonceStr: configData.nonceStr,
+          signaturePreview: configData.signature ? `${configData.signature.substring(0, 10)}...` : '空'
+        });
+
+        // 返回的结构必须包含 timestamp, nonceStr, signature
+        return {
+          timestamp: configData.timestamp,   // 可以是字符串或数字
+          nonceStr: configData.nonceStr,
+          signature: configData.signature
+        };
+      })
+      .catch(error => {
+        console.error('[签名函数] 获取签名失败:', error);
+        // 5. 重要：即使失败，也必须返回一个符合格式的对象，否则SDK会报错
+        // 这里返回一个模拟签名（仅用于开发测试，生产环境应处理错误）
+        const fallbackTimestamp = Math.floor(Date.now() / 1000);
+        const fallbackNonceStr = 'fallback_nonce_' + Date.now();
+        return {
+          timestamp: fallbackTimestamp,
+          nonceStr: fallbackNonceStr,
+          signature: 'mock_signature_for_debug_' + fallbackTimestamp,
+          isMock: true // 自定义标记，便于识别
+        };
+      });
+  }
+
+  /**
+   * 供 ww.register 使用的 Agent config 签名生成函数
+   * @param {string} url - 当前页面的完整URL（用于生成签名）
+   * @returns {Promise<Object>} 返回一个Promise，解析为签名对象
+   */
+  getAgentConfigSignature = (url) => {
+    // 1. 从参数中获取当前页面的URL（SDK会自动传入）
+    const currentUrl = url;
+    console.log('[签名函数] 接收到URL:', currentUrl);
+
+    // 2. 调用你已有的后端签名接口
+    // 注意：URL需要先移除hash部分，并且encodeURIComponent
+    const apiUrl = `http://www.hyorange.com:8080/api/wx-config?url=${encodeURIComponent(currentUrl.split('#')[0])}`;
 
     // 3. 返回一个Promise，SDK会等待其完成
     return fetch(apiUrl)
@@ -86,10 +138,12 @@ class WeComSidebarAssistant {
         'onChatMessage',
         'openEnterpriseChat',
         'getExternalContact',
-        'showModal'
+        'showModal',
+        'getCurExternalContact'
       ],
-      getConfigSignature: this.getConfigSignature
-    }) 
+      getConfigSignature: this.getConfigSignature,
+      getAgentConfigSignature: this.getAgentConfigSignature
+    })
     
     //const response = await fetch(`http://111.230.112.121:8080/api/wx-config?url=${window.location.href}`);
     //const config = await response.json();
