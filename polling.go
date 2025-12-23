@@ -296,6 +296,76 @@ func recognizeVoiceWithWeCom(accessToken string, voiceData []byte) (string, erro
 	return "", fmt.Errorf("未配置语音识别服务，请设置 VOICE_RECOGNITION_API_URL 环境变量")
 }
 
+// linkSuggestionToMessage 将客服消息与 suggestion 进行关联
+// 根据消息内容匹配 suggestion 表中的 original_content 或 edited_content
+func (c *WeComClient) linkSuggestionToMessage(agentID, chatID, msgID, content string, msgTime time.Time) {
+	// 从环境变量获取查询条数，默认 10 条
+	queryLimit := 10
+	if limitStr := os.Getenv("SUGGESTION_QUERY_LIMIT"); limitStr != "" {
+		if limit, err := fmt.Sscanf(limitStr, "%d", &queryLimit); err != nil || limit != 1 {
+			queryLimit = 10
+		}
+	}
+
+	// 查询 suggestion 表
+	suggestions, err := findSuggestionsByContent(agentID, chatID, content, msgTime, queryLimit)
+	if err != nil {
+		logger.Error("查询 suggestion 失败",
+			zap.String("agent_id", agentID),
+			zap.String("chat_id", chatID),
+			zap.String("msg_id", msgID),
+			zap.Error(err))
+		return
+	}
+
+	if len(suggestions) == 0 {
+		logger.Debug("未找到匹配的 suggestion",
+			zap.String("agent_id", agentID),
+			zap.String("chat_id", chatID),
+			zap.String("msg_id", msgID),
+			zap.String("content", content))
+		return
+	}
+
+	// 更新相似度最高的 suggestion（已按相似度从高到低排序）
+	suggestion := suggestions[0]
+
+	// 记录匹配到的所有 suggestion 的相似度（用于调试）
+	if len(suggestions) > 1 {
+		similarities := make([]float64, len(suggestions))
+		for i, s := range suggestions {
+			similarities[i] = s.Similarity
+		}
+		logger.Debug("找到多条匹配的 suggestion，选择相似度最高的",
+			zap.String("agent_id", agentID),
+			zap.String("chat_id", chatID),
+			zap.String("msg_id", msgID),
+			zap.Float64s("all_similarities", similarities),
+			zap.Float64("selected_similarity", suggestion.Similarity),
+			zap.String("selected_suggestion_id", suggestion.SuggestionID))
+	}
+
+	if err := updateSuggestionMsgID(suggestion.SuggestionID, msgID, suggestion.Similarity); err != nil {
+		logger.Error("更新 suggestion msg_id 和相似率失败",
+			zap.String("agent_id", agentID),
+			zap.String("chat_id", chatID),
+			zap.String("msg_id", msgID),
+			zap.String("suggestion_id", suggestion.SuggestionID),
+			zap.Float64("similarity", suggestion.Similarity),
+			zap.Error(err))
+		return
+	}
+
+	logger.Info("成功关联 suggestion 与消息",
+		zap.String("agent_id", agentID),
+		zap.String("chat_id", chatID),
+		zap.String("msg_id", msgID),
+		zap.String("suggestion_id", suggestion.SuggestionID),
+		zap.Float64("similarity", suggestion.Similarity),
+		zap.String("match_type", suggestion.MatchType),
+		zap.Int("matched_count", len(suggestions)))
+}
+
 // recognizeVoiceWithThirdParty 使用第三方语音识别服务
 func recognizeVoiceWithThirdParty(apiURL string, voiceData []byte) (string, error) {
 	// 创建 multipart/form-data 请求
@@ -580,6 +650,43 @@ func (c *WeComClient) pollChatMessages() {
 		msgID := ""
 		if id, ok := msgMap["msgid"].(string); ok {
 			msgID = id
+		}
+
+		// 获取消息时间戳
+		var msgTime time.Time
+		if msgtime, ok := msgMap["msgtime"].(float64); ok {
+			// msgtime 是毫秒时间戳
+			msgTime = time.Unix(0, int64(msgtime)*int64(time.Millisecond))
+		} else {
+			msgTime = time.Now()
+		}
+
+		// 判断是否是客服发送的消息
+		// 方法1: 通过 action 字段判断，action="send" 表示发送的消息
+		// 方法2: 通过 from 字段判断，如果 from 等于 AgentID，则是客服发送的消息
+		isAgentMessage := false
+		if action, ok := decryptedMsgData["action"].(string); ok && action == "send" {
+			// 如果 action 是 "send"，还需要确认是客服发送的
+			// 检查 from 字段是否等于 AgentID
+			if from, ok := decryptedMsgData["from"].(string); ok {
+				if from == c.AgentID {
+					isAgentMessage = true
+				}
+			}
+		} else {
+			// 如果没有 action 字段，通过 from 字段判断
+			if from, ok := decryptedMsgData["from"].(string); ok {
+				// 如果 from 字段的值是 AgentID，说明是客服发送的消息
+				if from == c.AgentID {
+					isAgentMessage = true
+				}
+			}
+		}
+
+		// 如果是客服发送的消息，异步处理 suggestion 关联
+		if isAgentMessage && msgID != "" && len(msgContent) > 0 && db != nil {
+			contentStr := string(msgContent)
+			go c.linkSuggestionToMessage(c.AgentID, chatID, msgID, contentStr, msgTime)
 		}
 
 		// 按 chatId 聚合消息

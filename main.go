@@ -13,6 +13,11 @@ func init() {
 		// .env 文件不存在时忽略错误，使用系统环境变量
 		logger.Info("未找到 .env 文件，使用系统环境变量")
 	}
+
+	// 初始化数据库
+	if err := initDatabase(); err != nil {
+		logger.Warn("数据库初始化失败，suggestion 关联功能将不可用", zap.Error(err))
+	}
 }
 
 func main() {
