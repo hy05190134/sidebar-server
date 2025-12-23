@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -204,6 +207,170 @@ func (c *WeComClient) handleGetPollInterval() {
 	})
 }
 
+// downloadVoiceFile 下载语音文件
+func (c *WeComClient) downloadVoiceFile(sdkFileid string) ([]byte, error) {
+	c.mu.Lock()
+	sdk := c.weworkSDK
+	c.mu.Unlock()
+
+	if sdk == nil {
+		return nil, fmt.Errorf("wework SDK 未初始化")
+	}
+
+	// 获取代理配置
+	proxy := os.Getenv("WECOM_PROXY")
+	if proxy == "" {
+		proxy = ""
+	}
+	passwd := os.Getenv("WECOM_PROXY_PASSWD")
+	if passwd == "" {
+		passwd = ""
+	}
+	timeout := 30
+
+	// 分片下载媒体文件
+	var voiceData bytes.Buffer
+	indexbuf := ""
+	isFinish := false
+
+	for !isFinish {
+		mediaData, err := sdk.GetMediaData(indexbuf, sdkFileid, proxy, passwd, timeout)
+		if err != nil {
+			return nil, fmt.Errorf("获取媒体数据失败: %w", err)
+		}
+
+		// 写入缓冲区
+		if _, err := voiceData.Write(mediaData.Data); err != nil {
+			return nil, fmt.Errorf("写入数据失败: %w", err)
+		}
+
+		indexbuf = mediaData.OutIndex
+		isFinish = mediaData.IsFinish
+	}
+
+	logger.Debug("语音文件下载完成", zap.String("agent_id", c.AgentID), zap.Int("size", voiceData.Len()))
+	return voiceData.Bytes(), nil
+}
+
+// convertVoiceToText 将语音转换为文本
+func (c *WeComClient) convertVoiceToText(voiceData []byte) (string, error) {
+	// 获取 access_token
+	corpID := os.Getenv("WECOM_CORP_ID")
+	corpSecret := os.Getenv("WECOM_CORP_SECRET")
+	if corpID == "" || corpSecret == "" {
+		return "", fmt.Errorf("缺少 WECOM_CORP_ID 或 WECOM_CORP_SECRET 环境变量")
+	}
+
+	accessToken, err := getAccessToken(corpID, corpSecret)
+	if err != nil {
+		return "", fmt.Errorf("获取 access_token 失败: %w", err)
+	}
+
+	// 调用企业微信语音识别 API
+	// 注意：这里使用企业微信的语音识别接口
+	// 如果企业微信没有提供，可以使用第三方服务（如百度、腾讯等）
+	text, err := recognizeVoiceWithWeCom(accessToken, voiceData)
+	if err != nil {
+		logger.Warn("企业微信语音识别失败，尝试其他方式", zap.String("agent_id", c.AgentID), zap.Error(err))
+		// 可以在这里添加其他语音识别服务的调用
+		return "", fmt.Errorf("语音转文本失败: %w", err)
+	}
+
+	return text, nil
+}
+
+// recognizeVoiceWithWeCom 使用企业微信 API 进行语音识别
+func recognizeVoiceWithWeCom(accessToken string, voiceData []byte) (string, error) {
+	// 企业微信语音识别 API
+	// 注意：企业微信可能没有直接的语音识别 API，这里需要根据实际情况调整
+	// 如果有第三方语音识别服务，可以在这里调用
+
+	// 检查是否配置了第三方语音识别服务
+	voiceAPIURL := os.Getenv("VOICE_RECOGNITION_API_URL")
+	if voiceAPIURL != "" {
+		return recognizeVoiceWithThirdParty(voiceAPIURL, voiceData)
+	}
+
+	// 尝试使用企业微信可能的语音识别接口（如果有的话）
+	// 这里先返回错误，提示需要配置
+	return "", fmt.Errorf("未配置语音识别服务，请设置 VOICE_RECOGNITION_API_URL 环境变量")
+}
+
+// recognizeVoiceWithThirdParty 使用第三方语音识别服务
+func recognizeVoiceWithThirdParty(apiURL string, voiceData []byte) (string, error) {
+	// 创建 multipart/form-data 请求
+	var requestBody bytes.Buffer
+
+	// 这里需要根据实际的第三方 API 格式来构建请求
+	// 示例：使用 multipart form 上传语音文件
+	boundary := "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+
+	// 构建 multipart form data
+	formData := fmt.Sprintf("--%s\r\n", boundary)
+	formData += fmt.Sprintf("Content-Disposition: form-data; name=\"voice\"; filename=\"voice.amr\"\r\n")
+	formData += "Content-Type: audio/amr\r\n\r\n"
+
+	requestBody.WriteString(formData)
+	requestBody.Write(voiceData)
+	requestBody.WriteString(fmt.Sprintf("\r\n--%s--\r\n", boundary))
+
+	// 创建 HTTP 请求
+	req, err := http.NewRequest("POST", apiURL, &requestBody)
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", fmt.Sprintf("multipart/form-data; boundary=%s", boundary))
+
+	// 检查是否需要认证
+	apiKey := os.Getenv("VOICE_RECOGNITION_API_KEY")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	// 发送请求
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("请求语音识别服务失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("语音识别服务返回错误: status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
+	// 解析响应（根据实际 API 格式调整）
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	// 提取文本结果（根据实际 API 格式调整字段名）
+	text, ok := result["text"].(string)
+	if !ok {
+		// 尝试其他可能的字段名
+		if transcript, ok := result["transcript"].(string); ok {
+			text = transcript
+		} else if resultText, ok := result["result"].(string); ok {
+			text = resultText
+		} else {
+			return "", fmt.Errorf("响应中未找到文本结果: %s", string(body))
+		}
+	}
+
+	return text, nil
+}
+
 // pollChatMessages 轮询获取会话消息
 func (c *WeComClient) pollChatMessages() {
 	c.mu.Lock()
@@ -344,6 +511,65 @@ func (c *WeComClient) pollChatMessages() {
 			} else {
 				// 如果 content 不是字符串，尝试序列化整个消息
 				msgContent, _ = json.Marshal(decryptedMsgData)
+			}
+		case "voice":
+			// 语音消息，下载语音文件并转文本
+			voiceData, ok := decryptedMsgData["voice"].(map[string]interface{})
+			if !ok {
+				logger.Warn("客服语音消息格式错误，跳过", zap.String("agent_id", c.AgentID))
+				continue
+			}
+
+			sdkFileid, ok := voiceData["sdkfileid"].(string)
+			if !ok || sdkFileid == "" {
+				logger.Warn("客服语音消息缺少 sdkfileid，跳过", zap.String("agent_id", c.AgentID))
+				continue
+			}
+
+			// 获取消息中声明的语音文件大小（用于对比）
+			var expectedSize uint32
+			if voiceSize, ok := voiceData["voice_size"].(float64); ok {
+				expectedSize = uint32(voiceSize)
+			}
+
+			// 下载语音文件
+			voiceBytes, err := c.downloadVoiceFile(sdkFileid)
+			if err != nil {
+				logger.Error("客服下载语音文件失败", zap.String("agent_id", c.AgentID), zap.Error(err))
+				continue
+			}
+
+			// 对比下载的语音文件大小
+			actualSize := len(voiceBytes)
+			if expectedSize > 0 {
+				if uint32(actualSize) != expectedSize {
+					logger.Warn("语音文件大小不匹配",
+						zap.String("agent_id", c.AgentID),
+						zap.Uint32("expected_size", expectedSize),
+						zap.Int("actual_size", actualSize),
+						zap.Int("difference", actualSize-int(expectedSize)))
+				} else {
+					logger.Debug("语音文件大小匹配",
+						zap.String("agent_id", c.AgentID),
+						zap.Int("size", actualSize))
+				}
+			} else {
+				logger.Info("下载语音文件完成",
+					zap.String("agent_id", c.AgentID),
+					zap.Int("size", actualSize),
+					zap.String("note", "消息中未提供预期大小"))
+			}
+
+			// 将语音转换为文本
+			text, err := c.convertVoiceToText(voiceBytes)
+			if err != nil {
+				logger.Error("客服语音转文本失败", zap.String("agent_id", c.AgentID), zap.Error(err))
+				// 即使转文本失败，也可以发送原始语音信息给 AI
+				msgContent = []byte(fmt.Sprintf("[语音消息，转文本失败: %v]", err))
+			} else {
+				// 使用转换后的文本
+				msgContent = []byte(text)
+				logger.Info("客服语音转文本成功", zap.String("agent_id", c.AgentID), zap.String("text", text))
 			}
 		default:
 			logger.Debug("客服收到不支持的消息类型，跳过", zap.String("agent_id", c.AgentID), zap.String("msg_type", msgType))
