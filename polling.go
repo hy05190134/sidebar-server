@@ -3,12 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
 
 	"wework-sdk/wework"
+
+	"go.uber.org/zap"
 )
 
 // startPolling 启动轮询获取会话消息
@@ -17,7 +18,7 @@ func (c *WeComClient) startPolling() {
 	corpID := os.Getenv("WECOM_CORP_ID")
 	corpSecret := os.Getenv("WECOM_CORP_SECRET")
 	if corpID == "" || corpSecret == "" {
-		log.Printf("客服 %s 轮询启动失败: 缺少 WECOM_CORP_ID 或 WECOM_CORP_SECRET 环境变量", c.AgentID)
+		logger.Warn("客服轮询启动失败: 缺少环境变量", zap.String("agent_id", c.AgentID))
 		return
 	}
 
@@ -31,7 +32,7 @@ func (c *WeComClient) startPolling() {
 	sdk := wework.NewSDK()
 
 	if err := sdk.Init(corpID, archiveSecret); err != nil {
-		log.Printf("客服 %s 初始化 wework SDK 失败: %v", c.AgentID, err)
+		logger.Error("客服初始化 wework SDK 失败", zap.String("agent_id", c.AgentID), zap.Error(err))
 		sdk.Destroy()
 		return
 	}
@@ -42,7 +43,7 @@ func (c *WeComClient) startPolling() {
 	currentInterval := c.pollInterval
 	c.mu.Unlock()
 
-	log.Printf("客服 %s 开始轮询会话消息，间隔: %v", c.AgentID, currentInterval)
+	logger.Info("客服开始轮询会话消息", zap.String("agent_id", c.AgentID), zap.Duration("interval", currentInterval))
 
 	// 立即执行一次
 	c.pollChatMessages()
@@ -60,7 +61,7 @@ func (c *WeComClient) startPolling() {
 			}
 			c.pollInterval = newInterval
 			c.pollTicker = time.NewTicker(newInterval)
-			log.Printf("客服 %s 轮询间隔已更新为: %v", c.AgentID, newInterval)
+			logger.Info("客服轮询间隔已更新", zap.String("agent_id", c.AgentID), zap.Duration("interval", newInterval))
 			c.mu.Unlock()
 			// 发送确认消息
 			c.SendMessage(map[string]interface{}{
@@ -69,7 +70,7 @@ func (c *WeComClient) startPolling() {
 				"poll_interval": float64(newInterval) / float64(time.Second),
 			})
 		case <-c.pollStop:
-			log.Printf("客服 %s 停止轮询会话消息", c.AgentID)
+			logger.Info("客服停止轮询会话消息", zap.String("agent_id", c.AgentID))
 			// 销毁 SDK
 			c.mu.Lock()
 			if c.weworkSDK != nil {
@@ -108,7 +109,7 @@ func (c *WeComClient) handleSetPollInterval(msg WeComMessage) {
 	// 解析消息内容，获取间隔时间（单位：秒）
 	var intervalData map[string]interface{}
 	if err := json.Unmarshal(msg.Content, &intervalData); err != nil {
-		log.Printf("客服 %s 解析轮询间隔设置失败: %v", c.AgentID, err)
+		logger.Error("客服解析轮询间隔设置失败", zap.String("agent_id", c.AgentID), zap.Error(err))
 		c.SendMessage(map[string]interface{}{
 			"type":     "poll_interval_error",
 			"agent_id": c.AgentID,
@@ -120,7 +121,7 @@ func (c *WeComClient) handleSetPollInterval(msg WeComMessage) {
 	// 获取间隔值（单位：秒）
 	intervalSec, ok := intervalData["interval"].(float64)
 	if !ok {
-		log.Printf("客服 %s 轮询间隔设置缺少 interval 字段", c.AgentID)
+		logger.Warn("客服轮询间隔设置缺少 interval 字段", zap.String("agent_id", c.AgentID))
 		c.SendMessage(map[string]interface{}{
 			"type":     "poll_interval_error",
 			"agent_id": c.AgentID,
@@ -135,7 +136,7 @@ func (c *WeComClient) handleSetPollInterval(msg WeComMessage) {
 	newInterval := time.Duration(intervalSec) * time.Second
 
 	if newInterval < minInterval {
-		log.Printf("客服 %s 轮询间隔设置过小: %v，最小值为: %v", c.AgentID, newInterval, minInterval)
+		logger.Warn("客服轮询间隔设置过小", zap.String("agent_id", c.AgentID), zap.Duration("interval", newInterval), zap.Duration("min_interval", minInterval))
 		c.SendMessage(map[string]interface{}{
 			"type":     "poll_interval_error",
 			"agent_id": c.AgentID,
@@ -145,7 +146,7 @@ func (c *WeComClient) handleSetPollInterval(msg WeComMessage) {
 	}
 
 	if newInterval > maxInterval {
-		log.Printf("客服 %s 轮询间隔设置过大: %v，最大值为: %v", c.AgentID, newInterval, maxInterval)
+		logger.Warn("客服轮询间隔设置过大", zap.String("agent_id", c.AgentID), zap.Duration("interval", newInterval), zap.Duration("max_interval", maxInterval))
 		c.SendMessage(map[string]interface{}{
 			"type":     "poll_interval_error",
 			"agent_id": c.AgentID,
@@ -164,7 +165,7 @@ func (c *WeComClient) handleSetPollInterval(msg WeComMessage) {
 		c.mu.Lock()
 		c.pollInterval = newInterval
 		c.mu.Unlock()
-		log.Printf("客服 %s 轮询间隔配置已更新为: %v（轮询未启动，将在启动时生效）", c.AgentID, newInterval)
+		logger.Info("客服轮询间隔配置已更新（轮询未启动，将在启动时生效）", zap.String("agent_id", c.AgentID), zap.Duration("interval", newInterval))
 		c.SendMessage(map[string]interface{}{
 			"type":          "poll_interval_updated",
 			"agent_id":      c.AgentID,
@@ -177,9 +178,9 @@ func (c *WeComClient) handleSetPollInterval(msg WeComMessage) {
 	// 发送更新请求到轮询循环
 	select {
 	case c.pollIntervalCh <- newInterval:
-		log.Printf("客服 %s 已发送轮询间隔更新请求: %v", c.AgentID, newInterval)
+		logger.Info("客服已发送轮询间隔更新请求", zap.String("agent_id", c.AgentID), zap.Duration("interval", newInterval))
 	default:
-		log.Printf("客服 %s 轮询间隔更新通道已满，跳过", c.AgentID)
+		logger.Warn("客服轮询间隔更新通道已满，跳过", zap.String("agent_id", c.AgentID))
 		c.SendMessage(map[string]interface{}{
 			"type":     "poll_interval_error",
 			"agent_id": c.AgentID,
@@ -231,7 +232,7 @@ func (c *WeComClient) pollChatMessages() {
 
 	chatData, err := sdk.GetChatData(seq, 100, proxy, passwd, timeout)
 	if err != nil {
-		log.Printf("客服 %s 获取会话存档失败: %v", c.AgentID, err)
+		logger.Error("客服获取会话存档失败", zap.String("agent_id", c.AgentID), zap.Error(err))
 		return
 	}
 
@@ -242,7 +243,7 @@ func (c *WeComClient) pollChatMessages() {
 	// 解析 JSON 数据
 	var result map[string]interface{}
 	if err := json.Unmarshal([]byte(chatData.Data), &result); err != nil {
-		log.Printf("客服 %s 解析会话存档数据失败: %v", c.AgentID, err)
+		logger.Error("客服解析会话存档数据失败", zap.String("agent_id", c.AgentID), zap.Error(err))
 		return
 	}
 
@@ -252,7 +253,7 @@ func (c *WeComClient) pollChatMessages() {
 		if msg, ok := result["errmsg"].(string); ok {
 			errmsg = msg
 		}
-		log.Printf("客服 %s 获取会话存档返回错误: errcode=%.0f, errmsg=%s", c.AgentID, errcode, errmsg)
+		logger.Error("客服获取会话存档返回错误", zap.String("agent_id", c.AgentID), zap.Float64("errcode", errcode), zap.String("errmsg", errmsg))
 		return
 	}
 
@@ -262,7 +263,7 @@ func (c *WeComClient) pollChatMessages() {
 		return
 	}
 
-	log.Printf("客服 %s 获取到 %d 条新消息", c.AgentID, len(chatdata))
+	logger.Info("客服获取到新消息", zap.String("agent_id", c.AgentID), zap.Int("count", len(chatdata)))
 
 	// 按 chatId 分类聚合消息
 	type MessageInfo struct {
@@ -294,21 +295,21 @@ func (c *WeComClient) pollChatMessages() {
 		encryptChatMsg, hasMsg := msgMap["encrypt_chat_msg"].(string)
 
 		if !hasKey || !hasMsg {
-			log.Printf("客服 %s 消息缺少加密字段，跳过解密", c.AgentID)
+			logger.Warn("客服消息缺少加密字段，跳过解密", zap.String("agent_id", c.AgentID))
 			continue
 		}
 
 		// 解密消息
 		decryptedMsg, err := decryptChatMessage(encryptRandomKey, encryptChatMsg)
 		if err != nil {
-			log.Printf("客服 %s 解密消息失败: %v", c.AgentID, err)
+			logger.Error("客服解密消息失败", zap.String("agent_id", c.AgentID), zap.Error(err))
 			continue
 		}
 
 		// 解析解密后的消息 JSON
 		var decryptedMsgData map[string]interface{}
 		if err := json.Unmarshal([]byte(decryptedMsg), &decryptedMsgData); err != nil {
-			log.Printf("客服 %s 解析解密后的消息失败: %v", c.AgentID, err)
+			logger.Error("客服解析解密后的消息失败", zap.String("agent_id", c.AgentID), zap.Error(err))
 			continue
 		}
 
@@ -320,16 +321,16 @@ func (c *WeComClient) pollChatMessages() {
 
 		// 如果 chatID 不匹配，跳过此消息
 		if chatID != "" && chatID != c.ChatID {
-			log.Printf("客服 %s 消息 chatid=%s 不匹配当前会话 chat_id=%s，跳过", c.AgentID, chatID, c.ChatID)
+			logger.Debug("客服消息 chatid 不匹配当前会话，跳过", zap.String("agent_id", c.AgentID), zap.String("chat_id", chatID), zap.String("current_chat_id", c.ChatID))
 			continue
 		}
 
-		log.Printf("客服 %s 解密消息成功，chatid=%s", c.AgentID, chatID)
+		logger.Debug("客服解密消息成功", zap.String("agent_id", c.AgentID), zap.String("chat_id", chatID))
 
 		// 检查消息类型
 		msgType, ok := decryptedMsgData["msgtype"].(string)
 		if !ok {
-			log.Printf("客服 %s 消息类型字段缺失或格式错误，跳过", c.AgentID)
+			logger.Warn("客服消息类型字段缺失或格式错误，跳过", zap.String("agent_id", c.AgentID))
 			continue
 		}
 
@@ -345,7 +346,7 @@ func (c *WeComClient) pollChatMessages() {
 				msgContent, _ = json.Marshal(decryptedMsgData)
 			}
 		default:
-			log.Printf("客服 %s 收到类型消息: %s, 暂不支持，跳过", c.AgentID, msgType)
+			logger.Debug("客服收到不支持的消息类型，跳过", zap.String("agent_id", c.AgentID), zap.String("msg_type", msgType))
 			continue
 		}
 
@@ -406,7 +407,7 @@ func (c *WeComClient) pollChatMessages() {
 				MsgID:   msgID,
 			}
 
-			log.Printf("客服 %s 发送聚合消息给 AI: chat_id=%s, 消息数量=%d", c.AgentID, cid, len(msgs))
+			logger.Info("客服发送聚合消息给 AI", zap.String("agent_id", c.AgentID), zap.String("chat_id", cid), zap.Int("message_count", len(msgs)))
 			c.handleAIAssistanceRequest(aiMsg)
 		}(chatID, messages)
 	}

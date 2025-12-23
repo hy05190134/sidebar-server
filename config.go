@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	mathrand "math/rand"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // generateNonceStr 生成随机字符串
@@ -137,14 +138,14 @@ func WeComConfigHandler(w http.ResponseWriter, r *http.Request) {
 	// 获取配置
 	config, err := getWeComConfig(r)
 	if err != nil {
-		log.Printf("获取企业微信配置失败: %v", err)
+		logger.Error("获取企业微信配置失败", zap.Error(err))
 		http.Error(w, fmt.Sprintf("获取配置失败: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	// 返回 JSON 响应
 	if err := json.NewEncoder(w).Encode(config); err != nil {
-		log.Printf("编码响应失败: %v", err)
+		logger.Error("编码响应失败", zap.Error(err))
 		http.Error(w, "编码响应失败", http.StatusInternalServerError)
 		return
 	}

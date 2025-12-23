@@ -1,33 +1,39 @@
 package main
 
 import (
-	"log"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // triggerNextAIAnalysis 触发AI分析后续对话
 func (c *WeComClient) triggerNextAIAnalysis(msg WeComMessage) {
 	// TODO: 实现AI分析逻辑
-	log.Printf("触发AI分析: agent_id=%s, chat_id=%s", c.AgentID, c.ChatID)
+	logger.Info("触发AI分析", zap.String("agent_id", c.AgentID), zap.String("chat_id", c.ChatID))
 }
 
 // handleAIFeedback 处理AI建议反馈
 func (c *WeComClient) handleAIFeedback(msg WeComMessage) {
 	// TODO: 实现AI反馈处理逻辑
-	log.Printf("收到AI反馈: agent_id=%s, chat_id=%s, suggestion_id=%s, action=%s, original_content=%s, edited_content=%s",
-		c.AgentID, c.ChatID, msg.SuggestionID, msg.Action, msg.OriginalContent, msg.EditedContent)
+	logger.Info("收到AI反馈",
+		zap.String("agent_id", c.AgentID),
+		zap.String("chat_id", c.ChatID),
+		zap.String("suggestion_id", msg.SuggestionID),
+		zap.String("action", msg.Action),
+		zap.String("original_content", msg.OriginalContent),
+		zap.String("edited_content", msg.EditedContent))
 	// todo: update suggestion_id and action and  originalContent and editedContent into pg databas
 }
 
 // handleAIAssistanceRequest 处理AI协助请求
 func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
-	log.Printf("收到AI协助请求: agent_id=%s, chat_id=%s", c.AgentID, c.ChatID)
+	logger.Info("收到AI协助请求", zap.String("agent_id", c.AgentID), zap.String("chat_id", c.ChatID))
 
 	// 模拟 AI 处理延迟
 	time.Sleep(500 * time.Millisecond)
 
 	// msg.Content 为 string 类型，直接使用
-	log.Printf("AI协助请求 context: %s", string(msg.Content))
+	logger.Debug("AI协助请求 context", zap.String("agent_id", c.AgentID), zap.String("chat_id", c.ChatID), zap.String("context", string(msg.Content)))
 
 	// 生成模拟的 AI 协助响应，返回 text 字符串、confidence 和 suggestion_id
 	assistanceResponse := map[string]interface{}{
@@ -42,9 +48,9 @@ func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
 
 	// 发送 AI 协助响应
 	if err := c.SendMessage(assistanceResponse); err != nil {
-		log.Printf("发送AI协助响应失败: %v", err)
+		logger.Error("发送AI协助响应失败", zap.String("agent_id", c.AgentID), zap.Error(err))
 	} else {
-		log.Printf("已发送AI协助响应给客服 %s", c.AgentID)
+		logger.Info("已发送AI协助响应给客服", zap.String("agent_id", c.AgentID))
 	}
 
 	// todo: insert new suggestion record into pg database

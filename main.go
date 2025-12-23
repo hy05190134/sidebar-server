@@ -1,17 +1,17 @@
 package main
 
 import (
-	"log"
 	"net/http"
 
 	"github.com/joho/godotenv"
+	"go.uber.org/zap"
 )
 
 func init() {
 	// 加载 .env 文件（如果存在）
 	if err := godotenv.Load(); err != nil {
 		// .env 文件不存在时忽略错误，使用系统环境变量
-		log.Println("未找到 .env 文件，使用系统环境变量")
+		logger.Info("未找到 .env 文件，使用系统环境变量")
 	}
 }
 
@@ -28,8 +28,8 @@ func main() {
 
 	// 启动 HTTP 服务器
 	port := ":8080"
-	log.Printf("WebSocket 服务器启动在端口 %s", port)
+	logger.Info("WebSocket 服务器启动", zap.String("port", port))
 	if err := http.ListenAndServe(port, nil); err != nil {
-		log.Fatal("服务器启动失败: ", err)
+		logger.Fatal("服务器启动失败", zap.Error(err))
 	}
 }

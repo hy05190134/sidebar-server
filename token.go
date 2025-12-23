@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // getAccessToken 获取企业微信 access_token
@@ -51,7 +52,7 @@ func getAccessToken(corpID, corpSecret string) (string, error) {
 	if expiresIn <= 0 {
 		// 如果未返回过期时间，默认使用7200秒（2小时）
 		expiresIn = 7200
-		log.Printf("警告: access_token 未返回过期时间，使用默认值 7200 秒")
+		logger.Warn("access_token 未返回过期时间，使用默认值 7200 秒")
 	}
 
 	// 提前10%的时间过期，但最少提前60秒
@@ -66,7 +67,7 @@ func getAccessToken(corpID, corpSecret string) (string, error) {
 	tokenCache.tokenExpireAt = expireAt
 	tokenCache.mu.Unlock()
 
-	log.Printf("access_token 已缓存，过期时间: %v (微信返回有效期: %d 秒)", expireAt, expiresIn)
+	logger.Info("access_token 已缓存", zap.Time("expire_at", expireAt), zap.Int("expires_in", expiresIn))
 
 	return result.AccessToken, nil
 }
@@ -117,7 +118,7 @@ func getJSAPITicket(corpID, corpSecret string) (string, error) {
 	if expiresIn <= 0 {
 		// 如果未返回过期时间，默认使用7200秒（2小时）
 		expiresIn = 7200
-		log.Printf("警告: jsapi_ticket 未返回过期时间，使用默认值 7200 秒")
+		logger.Warn("jsapi_ticket 未返回过期时间，使用默认值 7200 秒")
 	}
 
 	// 提前10%的时间过期，但最少提前60秒
@@ -132,7 +133,7 @@ func getJSAPITicket(corpID, corpSecret string) (string, error) {
 	tokenCache.ticketExpireAt = expireAt
 	tokenCache.mu.Unlock()
 
-	log.Printf("jsapi_ticket 已缓存，过期时间: %v (微信返回有效期: %d 秒)", expireAt, expiresIn)
+	logger.Info("jsapi_ticket 已缓存", zap.Time("expire_at", expireAt), zap.Int("expires_in", expiresIn))
 
 	return result.Ticket, nil
 }

@@ -2,11 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 )
 
 // NewWeComHub 创建新的 WebSocket Hub
@@ -25,7 +25,7 @@ func (h *WeComHub) Run() {
 		select {
 		case client := <-h.Register:
 			h.Clients[client.AgentID] = client
-			log.Printf("客服 %s 已连接", client.AgentID)
+			logger.Info("客服已连接", zap.String("agent_id", client.AgentID))
 
 			// 发送连接成功消息
 			client.SendMessage(map[string]interface{}{
@@ -43,7 +43,7 @@ func (h *WeComHub) Run() {
 				close(client.Send)
 				// 停止轮询
 				client.stopPolling()
-				log.Printf("客服 %s 已断开", client.AgentID)
+				logger.Info("客服已断开", zap.String("agent_id", client.AgentID))
 			}
 
 		case message := <-h.Broadcast:
@@ -88,7 +88,7 @@ func WeComWebSocketHandler(hub *WeComHub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Printf("WebSocket升级失败: %v", err)
+			logger.Error("WebSocket升级失败", zap.Error(err))
 			return
 		}
 
@@ -125,7 +125,7 @@ func (c *WeComClient) readPump(hub *WeComHub) {
 		_, message, err := c.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("读取错误: %v", err)
+				logger.Error("读取错误", zap.Error(err))
 			}
 			break
 		}
@@ -138,7 +138,7 @@ func (c *WeComClient) readPump(hub *WeComHub) {
 func (c *WeComClient) handleMessage(data []byte, hub *WeComHub) {
 	var msg WeComMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
-		log.Printf("解析消息失败: %v", err)
+		logger.Error("解析消息失败", zap.Error(err))
 		return
 	}
 
@@ -151,7 +151,7 @@ func (c *WeComClient) handleMessage(data []byte, hub *WeComHub) {
 
 	case "agent_message_sent":
 		// 客服发送了消息
-		log.Printf("客服 %s 发送了消息", c.AgentID)
+		logger.Info("客服发送了消息", zap.String("agent_id", c.AgentID))
 
 		// 触发AI分析后续对话
 		go c.triggerNextAIAnalysis(msg)
