@@ -1,10 +1,39 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"time"
 
 	"go.uber.org/zap"
 )
+
+// AgentCallContent Agent调用内容
+type AgentCallContent struct {
+	Type    string      `json:"type"`    // 内容类型
+	Content interface{} `json:"content"` // 事件内容
+}
+
+// AgentCallEvent Agent调用事件请求
+type AgentCallEvent struct {
+	Type       string             `json:"type"`                 // 事件类型，必填
+	Contents   []AgentCallContent `json:"contents"`             // 事件内容，必填
+	UserID     string             `json:"userId,omitempty"`     // 用户ID
+	SessionID  int                `json:"sessionId,omitempty"`  // 会话ID
+	Timestamp  int64              `json:"timestamp,omitempty"`  // 事件时间戳
+	CallerType string             `json:"callerType,omitempty"` // 输入者类型
+}
+
+// AgentResponse Agent响应
+type AgentResponse struct {
+	Code      int                    `json:"code"`       // 状态码
+	SessionID int                    `json:"session_id"` // 会话ID
+	Message   string                 `json:"message"`    // 消息
+	Data      map[string]interface{} `json:"data"`       // 数据
+}
 
 // triggerNextAIAnalysis 触发AI分析后续对话
 func (c *WeComClient) triggerNextAIAnalysis(msg WeComMessage) {
@@ -56,21 +85,61 @@ func (c *WeComClient) handleAIFeedback(msg WeComMessage) {
 func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
 	logger.Info("收到AI协助请求", zap.String("agent_id", c.AgentID), zap.String("chat_id", c.ChatID))
 
-	// 模拟 AI 处理延迟
-	time.Sleep(500 * time.Millisecond)
-
 	// msg.Content 为 string 类型，直接使用
 	logger.Debug("AI协助请求 context", zap.String("agent_id", c.AgentID), zap.String("chat_id", c.ChatID), zap.String("context", string(msg.Content)))
 
-	// 生成模拟的 AI 协助响应，返回 text 字符串、confidence 和 suggestion_id
+	// 调用 Agent API 获取建议
+	agentResp, err := c.callAgentAPI(msg.Content)
+	if err != nil {
+		logger.Error("调用 Agent API 失败",
+			zap.String("agent_id", c.AgentID),
+			zap.String("chat_id", c.ChatID),
+			zap.Error(err))
+		return
+	}
+
+	// 从 Agent 响应中提取建议文本
+	suggestionText := ""
+	confidence := 0.8
+
+	// 尝试从 data 中提取内容
+	if agentResp.Data != nil {
+		// 尝试多种可能的字段名
+		if text, ok := agentResp.Data["text"].(string); ok && text != "" {
+			suggestionText = text
+		} else if response, ok := agentResp.Data["response"].(string); ok && response != "" {
+			suggestionText = response
+		} else if content, ok := agentResp.Data["content"].(string); ok && content != "" {
+			suggestionText = content
+		}
+
+		// 提取置信度
+		if conf, ok := agentResp.Data["confidence"].(float64); ok {
+			confidence = conf
+		}
+	}
+
+	// 如果没有获取到有效文本，记录警告并返回
+	if suggestionText == "" {
+		logger.Warn("Agent API 未返回有效建议文本",
+			zap.String("agent_id", c.AgentID),
+			zap.String("chat_id", c.ChatID),
+			zap.Any("agent_data", agentResp.Data))
+		return
+	}
+
+	// 生成 suggestion_id
+	suggestionID := fmt.Sprintf("sug_%d", time.Now().UnixNano())
+
+	// 构造 AI 协助响应
 	assistanceResponse := map[string]interface{}{
 		"type":          "ai_suggestion",
 		"agent_id":      c.AgentID,
 		"chat_id":       c.ChatID,
 		"msg_id":        "",
-		"suggestion_id": "sug_001",
-		"text":          "您好，请问有什么可以帮助您的吗？根据您的情况，建议您先检查一下相关设置。",
-		"confidence":    0.95,
+		"suggestion_id": suggestionID,
+		"text":          suggestionText,
+		"confidence":    confidence,
 	}
 
 	// 发送 AI 协助响应
@@ -82,26 +151,8 @@ func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
 	logger.Info("已发送AI协助响应给客服", zap.String("agent_id", c.AgentID))
 
 	// 插入 suggestion 记录到数据库
-	suggestionID, ok := assistanceResponse["suggestion_id"].(string)
-	if !ok {
-		logger.Warn("suggestion_id 类型错误，跳过数据库插入", zap.String("agent_id", c.AgentID))
-		return
-	}
-
-	text, ok := assistanceResponse["text"].(string)
-	if !ok {
-		logger.Warn("text 类型错误，跳过数据库插入", zap.String("agent_id", c.AgentID))
-		return
-	}
-
-	confidence, ok := assistanceResponse["confidence"].(float64)
-	if !ok {
-		logger.Warn("confidence 类型错误，跳过数据库插入", zap.String("agent_id", c.AgentID))
-		return
-	}
-
 	msgID := ""
-	if err := createSuggestion(suggestionID, c.AgentID, c.ChatID, msgID, text, confidence); err != nil {
+	if err := createSuggestion(suggestionID, c.AgentID, c.ChatID, msgID, suggestionText, confidence); err != nil {
 		logger.Error("插入 suggestion 记录失败",
 			zap.String("agent_id", c.AgentID),
 			zap.String("chat_id", c.ChatID),
@@ -115,4 +166,87 @@ func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
 			zap.String("msg_id", msgID),
 			zap.Float64("confidence", confidence))
 	}
+}
+
+// callAgentAPI 调用 Agent API
+func (c *WeComClient) callAgentAPI(content interface{}) (*AgentResponse, error) {
+	// Agent API 地址
+	agentURL := "http://192.168.201.28:8080/customer_support/assist"
+
+	// 构造请求体
+	requestBody := AgentCallEvent{
+		Type: "user_input",
+		Contents: []AgentCallContent{
+			{
+				Type:    "text",
+				Content: content,
+			},
+		},
+		UserID:     c.ChatID,
+		Timestamp:  time.Now().Unix(),
+		CallerType: "user",
+	}
+
+	// 序列化请求体
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求体失败: %w", err)
+	}
+
+	logger.Debug("调用 Agent API",
+		zap.String("agent_id", c.AgentID),
+		zap.String("url", agentURL),
+		zap.String("request", string(jsonData)))
+
+	// 创建 HTTP 请求
+	req, err := http.NewRequest("POST", agentURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// 发送请求
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("发送请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	logger.Debug("收到 Agent API 响应",
+		zap.String("agent_id", c.AgentID),
+		zap.Int("status_code", resp.StatusCode),
+		zap.String("response", string(respBody)))
+
+	// 检查 HTTP 状态码
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Agent API 返回错误状态码: %d, 响应: %s", resp.StatusCode, string(respBody))
+	}
+
+	// 解析响应
+	var agentResp AgentResponse
+	if err := json.Unmarshal(respBody, &agentResp); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	// 检查业务状态码
+	if agentResp.Code != 200 {
+		return nil, fmt.Errorf("Agent API 返回错误: code=%d, message=%s", agentResp.Code, agentResp.Message)
+	}
+
+	logger.Info("成功调用 Agent API",
+		zap.String("agent_id", c.AgentID),
+		zap.Int("session_id", agentResp.SessionID))
+
+	return &agentResp, nil
 }
