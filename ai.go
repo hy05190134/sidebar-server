@@ -17,14 +17,29 @@ type AgentCallContent struct {
 	Content interface{} `json:"content"` // 事件内容
 }
 
+// AgentInfo Agent信息
+type AgentInfo struct {
+	AgentID          string `json:"agent_id"`          // Agent ID
+	CustomID         string `json:"custom_id"`         // 自定义ID
+	PublishedVersion string `json:"published_version"` // 发布版本
+	URL              string `json:"url"`               // Agent URL
+	Type             string `json:"type"`              // Agent类型
+	AgentProviderID  int    `json:"agent_provider_id"` // Agent提供商ID
+	Description      string `json:"description"`       // Agent描述
+	Name             string `json:"name"`              // Agent名称
+}
+
 // AgentCallEvent Agent调用事件请求
 type AgentCallEvent struct {
-	Type       string             `json:"type"`                 // 事件类型，必填
-	Contents   []AgentCallContent `json:"contents"`             // 事件内容，必填
-	UserID     string             `json:"userId,omitempty"`     // 用户ID
-	SessionID  int                `json:"sessionId,omitempty"`  // 会话ID
-	Timestamp  int64              `json:"timestamp,omitempty"`  // 事件时间戳
-	CallerType string             `json:"callerType,omitempty"` // 输入者类型
+	Type             string             `json:"type"`                // 事件类型，必填
+	Contents         []AgentCallContent `json:"contents"`            // 事件内容，必填
+	Agents           []AgentInfo        `json:"agents,omitempty"`    // Agent列表
+	Tools            []interface{}      `json:"tools,omitempty"`     // 工具列表
+	CallerInstanceID int64              `json:"caller_instance_id"`  // 调用者实例ID
+	CallerType       string             `json:"caller_type"`         // 调用者类型
+	UserID           string             `json:"userId,omitempty"`    // 用户ID（保留向后兼容）
+	SessionID        int                `json:"sessionId,omitempty"` // 会话ID（保留向后兼容）
+	Timestamp        int64              `json:"timestamp,omitempty"` // 事件时间戳（保留向后兼容）
 }
 
 // AgentResponse Agent响应
@@ -103,19 +118,32 @@ func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
 	confidence := 0.8
 
 	// 尝试从 data 中提取内容
+	// data 结构: { "0": { "type": "text", "content": "..." } }
 	if agentResp.Data != nil {
-		// 尝试多种可能的字段名
-		if text, ok := agentResp.Data["text"].(string); ok && text != "" {
-			suggestionText = text
-		} else if response, ok := agentResp.Data["response"].(string); ok && response != "" {
-			suggestionText = response
-		} else if content, ok := agentResp.Data["content"].(string); ok && content != "" {
-			suggestionText = content
+		// 先尝试从 "0" key 获取内容对象
+		if contentObj, ok := agentResp.Data["0"].(map[string]interface{}); ok {
+			// 从内容对象中提取 content 字段
+			if content, ok := contentObj["content"].(string); ok && content != "" {
+				suggestionText = content
+			}
+		} else {
+			// 向后兼容：尝试直接从 data 中提取（旧格式）
+			if text, ok := agentResp.Data["text"].(string); ok && text != "" {
+				suggestionText = text
+			} else if response, ok := agentResp.Data["response"].(string); ok && response != "" {
+				suggestionText = response
+			} else if content, ok := agentResp.Data["content"].(string); ok && content != "" {
+				suggestionText = content
+			}
 		}
 
-		// 提取置信度
+		// 提取置信度（可能在 data 根级别或 "0" 对象中）
 		if conf, ok := agentResp.Data["confidence"].(float64); ok {
 			confidence = conf
+		} else if contentObj, ok := agentResp.Data["0"].(map[string]interface{}); ok {
+			if conf, ok := contentObj["confidence"].(float64); ok {
+				confidence = conf
+			}
 		}
 	}
 
@@ -182,9 +210,23 @@ func (c *WeComClient) callAgentAPI(content interface{}) (*AgentResponse, error) 
 				Content: content,
 			},
 		},
-		UserID:     c.ChatID,
-		Timestamp:  time.Now().Unix(),
-		CallerType: "user",
+		Agents: []AgentInfo{
+			{
+				AgentID:          "customer-support-agent",
+				CustomID:         "customer-support-agent",
+				PublishedVersion: "1.0.0",
+				URL:              "local",
+				Type:             "",
+				AgentProviderID:  0,
+				Description:      "",
+				Name:             "",
+			},
+		},
+		Tools:            []interface{}{},
+		CallerInstanceID: time.Now().UnixNano() / 1000, // 微秒级时间戳
+		CallerType:       "user",
+		UserID:           c.ChatID,
+		Timestamp:        time.Now().Unix(),
 	}
 
 	// 序列化请求体

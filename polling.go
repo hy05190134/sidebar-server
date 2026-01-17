@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -717,12 +718,12 @@ func (c *WeComClient) pollChatMessages() {
 				// 如果只有一条消息，直接使用
 				aggregatedContent = msgs[0].Content
 			} else {
-				// 多条消息，合并为 JSON 数组
+				// 多条消息，用换行符拼接
 				contents := make([]string, 0, len(msgs))
 				for _, msg := range msgs {
 					contents = append(contents, string(msg.Content))
 				}
-				aggregatedContent, _ = json.Marshal(contents)
+				aggregatedContent = []byte(strings.Join(contents, "\n"))
 			}
 
 			// 使用第一条消息的 msgID（或可以合并所有 msgID）
