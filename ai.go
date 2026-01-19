@@ -136,15 +136,6 @@ func (c *WeComClient) handleAIAssistanceRequest(msg WeComMessage) {
 				suggestionText = content
 			}
 		}
-
-		// 提取置信度（可能在 data 根级别或 "0" 对象中）
-		if conf, ok := agentResp.Data["confidence"].(float64); ok {
-			confidence = conf
-		} else if contentObj, ok := agentResp.Data["0"].(map[string]interface{}); ok {
-			if conf, ok := contentObj["confidence"].(float64); ok {
-				confidence = conf
-			}
-		}
 	}
 
 	// 如果没有获取到有效文本，记录警告并返回
